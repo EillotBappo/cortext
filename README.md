@@ -59,11 +59,12 @@ The dashboard joins two sources:
 
 - **`.cortext/tasks.json`** — written by the orchestrator each run. Supplies each
   agent's label, mode, tool-call budget, and token ceiling.
-- **The session transcript JSONL** (`~/.claude/projects/<slug>/<session>.jsonl`)
-  — the native log. The monitor filters `isSidechain` messages, groups them per
-  subagent, sums `usage.output_tokens` for the **token bar**, counts `tool_use`
-  blocks for the **progress bar**, and reads the last `tool_use` for the
-  **current-action** line.
+- **The per-subagent transcripts** that Claude Code writes to
+  `~/.claude/projects/<slug>/<session-id>/subagents/agent-*.jsonl` — one file per
+  subagent, the native log. For each, the monitor sums `usage.output_tokens` for
+  the **token bar**, counts `tool_use` blocks for the **progress bar**, reads the
+  last `tool_use` for the **current-action** line, and detects completion from
+  the final `end_turn`.
 
 > The progress % is an honest **estimate** — `tool_calls / budget`. It's a
 > liveness signal, not a promise; it pins at 100% if an agent runs past its

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """cortext-monitor — live TUI for cortext subagents.
 
-Reads the active Claude Code session transcript (the JSONL the harness already
-writes) plus the orchestrator's .cortext/tasks.json manifest, and renders a
-per-subagent progress + token dashboard.
+Reads the per-subagent transcripts Claude Code already writes plus the
+orchestrator's .cortext/tasks.json manifest, and renders a per-subagent
+progress + token dashboard.
 
 Data sources (all native, nothing to instrument):
-  - ~/.claude/projects/<slug>/<newest>.jsonl : per-message token usage + tool_use
-  - ./.cortext/tasks.json                     : labels + progress/token ceilings
+  - ~/.claude/projects/<slug>/<session-id>/subagents/agent-*.jsonl
+        one file per subagent : per-message token usage + tool_use
+  - ./.cortext/tasks.json
+        labels + progress/token ceilings
 
 Subagents are attributed by the `[cortext:<tag>]` marker the skill puts at the
 start of every subagent prompt.
@@ -15,7 +17,7 @@ start of every subagent prompt.
 Usage:
   cortext-monitor            # live loop in this project
   cortext-monitor --once     # render one frame and exit (non-TTY / CI)
-  cortext-monitor <path.jsonl>   # watch a specific transcript
+  cortext-monitor <dir>      # watch a specific subagents/ directory
   cortext-monitor --selftest # run parser self-checks
 
 ponytail: progress % is a tool-call estimate (calls/budget), not ground truth —
@@ -34,10 +36,19 @@ def project_transcript_dir():
     return os.path.expanduser(f"~/.claude/projects/{slug}")
 
 
-def newest_transcript():
+def newest_subagents_dir():
+    """subagents/ dir of the most recently active session in this project."""
     d = project_transcript_dir()
-    files = glob.glob(os.path.join(d, "*.jsonl"))
-    return max(files, key=os.path.getmtime) if files else None
+    sessions = glob.glob(os.path.join(d, "*.jsonl"))
+    if not sessions:
+        return None
+    newest = max(sessions, key=os.path.getmtime)
+    sid = os.path.basename(newest)[:-len(".jsonl")]
+    return os.path.join(d, sid, "subagents")
+
+
+def agent_files(subdir):
+    return sorted(glob.glob(os.path.join(subdir, "agent-*.jsonl"))) if subdir else []
 
 
 def load_objs(path):
@@ -74,36 +85,14 @@ def _short_action(block):
     return name
 
 
-def group_sidechains(objs):
-    """Group sidechain messages by their root ancestor so parallel, interleaved
-    subagents stay separate."""
-    by_uuid = {o.get("uuid"): o for o in objs if o.get("uuid")}
-
-    def root(o):
-        cur, seen = o, set()
-        while True:
-            uid = cur.get("uuid")
-            if uid in seen:
-                return uid
-            seen.add(uid)
-            par = by_uuid.get(cur.get("parentUuid"))
-            if par is None or not par.get("isSidechain"):
-                return uid
-            cur = par
-
-    groups = {}
-    for o in objs:
-        if o.get("isSidechain"):
-            groups.setdefault(root(o), []).append(o)
-    return groups
-
-
-def summarize_group(objs):
-    tag = None
+def summarize_agent(objs):
+    """Summarize one subagent's transcript (a list of JSONL objects)."""
+    tag = agent_id = None
     out_tokens = calls = 0
     action = None
     last_stop = None
     for o in objs:
+        agent_id = agent_id or o.get("agentId")
         msg = o.get("message") or {}
         content = msg.get("content")
         texts = []
@@ -130,6 +119,7 @@ def summarize_group(objs):
             last_stop = msg.get("stop_reason")
     return {
         "tag": tag,
+        "agent_id": agent_id,
         "out_tokens": out_tokens,
         "calls": calls,
         "action": action,
@@ -147,18 +137,18 @@ def human(n):
     return f"{n/1000:.1f}k" if n >= 1000 else str(n)
 
 
-def render(path, manifest, tick):
-    objs = load_objs(path)
-    groups = group_sidechains(objs)
-    rows = [summarize_group(g) for g in groups.values()]
+def render(subdir, manifest, tick):
+    files = agent_files(subdir)
+    rows = [summarize_agent(load_objs(f)) for f in files]
     tagged = [r for r in rows if r["tag"]]
     rows = tagged if tagged else rows  # fall back to untagged if none tagged
 
-    lines = [f"cortext monitor  ({os.path.basename(path)})   ^C to quit", ""]
+    header = os.path.basename(os.path.dirname(subdir)) if subdir else "no session"
+    lines = [f"cortext monitor  (session {header[:12]})   ^C to quit", ""]
     if not rows:
         lines.append("  no cortext subagents yet — dispatch some and they'll appear here")
-    for i, r in enumerate(sorted(rows, key=lambda x: x["tag"] or "")):
-        tag = r["tag"] or f"agent{i+1}"
+    for i, r in enumerate(sorted(rows, key=lambda x: x["tag"] or x["agent_id"] or "")):
+        tag = r["tag"] or (r["agent_id"] or f"agent{i+1}")[:6]
         m = manifest.get(tag, {})
         label = m.get("label", tag)
         mode = m.get("mode", "?")
@@ -185,16 +175,15 @@ def main(argv):
         return selftest()
     once = "--once" in argv
     argv = [a for a in argv if not a.startswith("--")]
-    path = argv[0] if argv else newest_transcript()
-    if not path or not os.path.exists(path):
-        print("cortext-monitor: no session transcript found for this project.")
+    subdir = argv[0] if argv else newest_subagents_dir()
+    if not subdir:
+        print("cortext-monitor: no session found for this project.")
         print("  looked in:", project_transcript_dir())
         return 1
     tick = 0
     try:
         while True:
-            manifest = load_manifest()
-            frame = render(path, manifest, tick)
+            frame = render(subdir, load_manifest(), tick)
             if once:
                 print(frame)
                 return 0
@@ -209,38 +198,31 @@ def main(argv):
 
 def selftest():
     objs = [
-        {"uuid": "a1", "isSidechain": True, "parentUuid": "main",
-         "message": {"role": "user", "content": "[cortext:t1] find the bug"}},
-        {"uuid": "a2", "isSidechain": True, "parentUuid": "a1",
-         "message": {"role": "assistant", "stop_reason": "tool_use",
-                     "usage": {"output_tokens": 300},
-                     "content": [{"type": "tool_use", "name": "Read",
-                                  "input": {"file_path": "cart.swift"}}]}},
-        {"uuid": "a3", "isSidechain": True, "parentUuid": "a2",
-         "message": {"role": "assistant", "stop_reason": "end_turn",
-                     "usage": {"output_tokens": 120},
-                     "content": [{"type": "text", "text": "found: cart.swift:42"}]}},
-        # second, interleaved subagent
-        {"uuid": "b1", "isSidechain": True, "parentUuid": "main",
-         "message": {"role": "user", "content": [{"type": "text", "text": "[cortext:t2] fix it"}]}},
-        {"uuid": "b2", "isSidechain": True, "parentUuid": "b1",
-         "message": {"role": "assistant", "stop_reason": "tool_use",
-                     "usage": {"output_tokens": 500},
-                     "content": [{"type": "tool_use", "name": "Edit",
-                                  "input": {"file_path": "cart.swift"}}]}},
-        # a non-sidechain (main thread) line must be ignored
-        {"uuid": "m1", "isSidechain": False,
-         "message": {"role": "assistant", "usage": {"output_tokens": 9999}}},
+        {"agentId": "z9", "message": {"role": "user", "content": "[cortext:t1] find the bug"}},
+        {"agentId": "z9", "message": {"role": "assistant", "stop_reason": "tool_use",
+         "usage": {"output_tokens": 300},
+         "content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "cart.swift"}}]}},
+        {"agentId": "z9", "message": {"role": "assistant", "stop_reason": "end_turn",
+         "usage": {"output_tokens": 120},
+         "content": [{"type": "text", "text": "found: cart.swift:42"}]}},
     ]
-    groups = group_sidechains(objs)
-    assert len(groups) == 2, f"expected 2 groups, got {len(groups)}"
-    summ = {s["tag"]: s for s in (summarize_group(g) for g in groups.values())}
-    assert set(summ) == {"t1", "t2"}, summ
-    assert summ["t1"]["calls"] == 1 and summ["t1"]["out_tokens"] == 420, summ["t1"]
-    assert summ["t1"]["done"] is True, summ["t1"]
-    assert summ["t2"]["calls"] == 1 and summ["t2"]["out_tokens"] == 500, summ["t2"]
-    assert summ["t2"]["done"] is False, summ["t2"]
-    assert summ["t2"]["action"] == "Edit cart.swift", summ["t2"]["action"]
+    s = summarize_agent(objs)
+    assert s["tag"] == "t1", s
+    assert s["calls"] == 1 and s["out_tokens"] == 420, s
+    assert s["done"] is True, s
+    assert s["action"] == "Read cart.swift", s
+    assert s["agent_id"] == "z9", s
+
+    # list-form content on the initial user prompt, unfinished agent
+    s2 = summarize_agent([
+        {"agentId": "y8", "message": {"role": "user",
+         "content": [{"type": "text", "text": "[cortext:t2] fix it"}]}},
+        {"agentId": "y8", "message": {"role": "assistant", "stop_reason": "tool_use",
+         "usage": {"output_tokens": 500},
+         "content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "cart.swift"}}]}},
+    ])
+    assert s2["tag"] == "t2" and s2["done"] is False and s2["action"] == "Edit cart.swift", s2
+
     assert bar(0.5) == "▓" * 5 + "░" * 5
     assert human(8200) == "8.2k" and human(120) == "120"
     print("selftest ok")
