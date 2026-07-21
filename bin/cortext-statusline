@@ -76,7 +76,11 @@ def row_content(task):
 
 def run(data):
     out = []
+    if not isinstance(data, dict):
+        return ""
     for task in data.get("tasks", []):
+        if not isinstance(task, dict):
+            continue
         tid = task.get("id")
         if tid is None:
             continue
@@ -102,6 +106,8 @@ def selftest():
     assert "●" in lines[1]["content"] and "haiku" in lines[1]["content"], lines[1]
     assert human(1100) == "1.1k" and short_model("claude-opus-4-8") == "opus"
     assert bar(0.5) == "▓" * 4 + "░" * 4
+    # harness stdin is trusted-ish but must never crash the panel.
+    assert run([]) == "" and run("nope") == "" and run({"tasks": ["x", 1]}) == ""
     print("selftest ok")
     return 0
 

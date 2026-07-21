@@ -175,6 +175,14 @@ def human(n):
     return f"{n/1000:.1f}k" if n >= 1000 else str(n)
 
 
+def _int(v, default):
+    # manifest is LLM-authored: budgets may arrive as "12" or garbage.
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def manifest_mtime():
     try:
         return os.path.getmtime(os.path.join(os.getcwd(), ".cortext", "tasks.json"))
@@ -203,8 +211,8 @@ def render(subdir, manifest, tick):
         m = manifest.get(tag, {})
         label = m.get("label", tag)
         mode = m.get("mode", "?")
-        tool_budget = max(1, m.get("tool_budget", 15))
-        token_budget = max(1, m.get("token_budget", 40000))
+        tool_budget = max(1, _int(m.get("tool_budget"), 15))
+        token_budget = max(1, _int(m.get("token_budget"), 40000))
         status = "✓ done" if r["done"] else SPIN[tick % len(SPIN)] + " run"
         pct = min(100, round(100 * r["calls"] / tool_budget))
         lines.append(
@@ -286,6 +294,8 @@ def selftest():
 
     assert bar(0.5) == "▓" * 5 + "░" * 5
     assert human(8200) == "8.2k" and human(120) == "120"
+    # LLM-authored manifests: string/garbage budgets must not crash render.
+    assert _int("12", 15) == 12 and _int(None, 15) == 15 and _int("x", 15) == 15
     print("selftest ok")
     return 0
 

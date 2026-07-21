@@ -1,6 +1,6 @@
 ---
 name: delegate
-description: Use when a task splits into 2+ independent, mechanical, or grunt-work subtasks (multi-file edits, parallel research/audits, batch refactors, "do X across all Y"). Delegates each subtask to a cheap Haiku subagent in an isolated git worktree with a minimal scoped brief, so the expensive orchestrator model only plans and integrates. Emits a live token/progress dashboard.
+description: Use whenever a task splits into 2+ independent subtasks — even small, quick, or mechanical ones (multi-file edits, parallel research/audits, batch refactors, "do X across all Y", "check A and B and C"). Size is not the bar; breadth is. Delegates each subtask to a cheap Haiku subagent in an isolated git worktree with a minimal scoped brief, so the expensive orchestrator model only plans and integrates. Emits a live token/progress dashboard.
 ---
 
 # cortext — Opus thinks, Haiku grinds
@@ -11,8 +11,10 @@ the results back and decide what happens next. You do NOT do the grunt work
 yourself.
 
 Engage when the task has **2+ independent subtasks** that don't share mutable
-state. If subtasks depend on each other's output, do the dependency yourself or
-sequence them — don't fake parallelism.
+state — including small ones. Two quick greps, three files to skim, a handful of
+mechanical edits: if the pieces are independent, push them to Haiku rather than
+grinding them yourself. If subtasks depend on each other's output, do the
+dependency yourself or sequence them — don't fake parallelism.
 
 ## The loop
 
@@ -56,14 +58,30 @@ sequence them — don't fake parallelism.
    brief. Give the subagent the narrow slice its subtask needs and nothing else.
    That is the entire point — cheap tokens, small context.
 
-5. **Integrate.** As each subagent returns, read its summary. For `ship`
-   worktrees, review and merge the diff. Decide the next round or finish.
-   Re-dispatch only what actually needs redoing.
+5. **Integrate.** As each subagent returns, read its summary. For a `ship`
+   worktree, the edit is left **uncommitted** on top of a base snapshot of your
+   dirty tree — so **do NOT `git merge` the worktree branch**: its base carries
+   your unrelated working changes, and merging pulls those instead of the edit.
+   Get exactly what the subagent changed from the `worktreePath` the completion
+   notification gives you:
+
+   ```
+   git -C <worktreePath> diff        # precisely the subagent's edit
+   ```
+
+   Review that diff, then apply the same change to your working tree
+   (`git apply`, or just redo the edit yourself). Decide the next round or
+   finish. Re-dispatch only what actually needs redoing.
 
 ## Guardrails
 
-- Don't delegate a one-shot task you'd finish in a couple of tool calls — the
-  dispatch overhead isn't worth it. This is for breadth, not trivia.
+- Small subtasks are fine — you do NOT need to reserve this for big jobs. As
+  soon as there are 2+ independent pieces, delegating them to Haiku keeps the
+  cheap work off your context, even when each piece is quick. Breadth is the
+  only bar; size is not.
+- The one thing not worth delegating is a genuine one-shot: a single subtask
+  with nothing to run alongside it. That's just dispatch overhead for no
+  parallelism — do it yourself.
 - Don't give a `scout` write tools or a reason to edit.
 - If a subagent returns garbage, that's usually too little context in the brief —
   add the missing slice and re-dispatch, don't widen it to the whole repo.

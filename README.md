@@ -50,8 +50,13 @@ you supervise several full peer agents in separate windows. cortext is about
 4. **The monitor** (a separate terminal) reads the transcript Claude Code already
    writes and renders live bars. No instrumentation, no hooks — it just tails
    the native output.
-5. **The orchestrator reads results back**, reviews/merges the worktree diffs,
-   and decides what to do next.
+5. **The orchestrator reads results back.** For a `ship` worktree it reviews the
+   subagent's **uncommitted** diff (`git -C <worktreePath> diff`) and applies it
+   to the working tree — it does *not* `git merge` the worktree branch, whose
+   base is a snapshot of your dirty tree. Then it decides what to do next.
+
+> `.cortext/` is created in your repo to hold the run manifest. Add `.cortext/`
+> to your `.gitignore` so it never lands in a commit.
 
 ### Where the numbers come from
 
