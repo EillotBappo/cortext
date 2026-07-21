@@ -168,8 +168,21 @@ def human(n):
     return f"{n/1000:.1f}k" if n >= 1000 else str(n)
 
 
+def manifest_mtime():
+    try:
+        return os.path.getmtime(os.path.join(os.getcwd(), ".cortext", "tasks.json"))
+    except OSError:
+        return None
+
+
 def render(subdir, manifest, tick):
     files = agent_files(subdir)
+    # Scope to the current run: the manifest is rewritten on each dispatch, so
+    # drop agent files older than it (stale tags from earlier runs in the same
+    # session would otherwise show as duplicates).
+    cutoff = manifest_mtime()
+    if cutoff:
+        files = [f for f in files if os.path.getmtime(f) >= cutoff - 1]
     rows = [summarize_agent(load_objs(f)) for f in files]
     tagged = [r for r in rows if r["tag"]]
     rows = tagged if tagged else rows  # fall back to untagged if none tagged
