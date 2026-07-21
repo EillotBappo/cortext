@@ -1,6 +1,9 @@
 {
   "name": "cortext",
   "owner": { "name": "EillotBappo" },
+  "metadata": {
+    "description": "cortext — Opus thinks, Haiku grinds. Scoped delegation to cheap subagents with a live token/progress TUI."
+  },
   "plugins": [
     {
       "name": "cortext",
