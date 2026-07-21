@@ -211,20 +211,30 @@ def main(argv):
         print("cortext-monitor: no Claude Code sessions found.")
         print("  looked under:", os.path.expanduser("~/.claude/projects"))
         return 1
+    if once or not sys.stdout.isatty():
+        print(render(subdir, load_manifest(), 0))
+        return 0
+
+    def draw(frame):
+        # home, rewrite each line clearing to EOL, then clear everything below.
+        body = "\n".join(l + "\x1b[K" for l in frame.split("\n"))
+        sys.stdout.write("\x1b[H" + body + "\x1b[J")
+        sys.stdout.flush()
+
     tick = 0
+    sys.stdout.write("\x1b[?1049h\x1b[H\x1b[2J\x1b[?25l")  # alt screen, clear, hide cursor
+    sys.stdout.flush()
     try:
         while True:
-            frame = render(subdir, load_manifest(), tick)
-            if once:
-                print(frame)
-                return 0
-            sys.stdout.write("\x1b[2J\x1b[H" + frame)
-            sys.stdout.flush()
+            draw(render(subdir, load_manifest(), tick))
             tick += 1
             time.sleep(1.0)
     except KeyboardInterrupt:
-        print()
-        return 0
+        pass
+    finally:
+        sys.stdout.write("\x1b[?25h\x1b[?1049l")  # show cursor, leave alt screen
+        sys.stdout.flush()
+    return 0
 
 
 def selftest():
