@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""cortext-statusline — subagentStatusLine renderer for the Claude Code UI.
+
+Claude Code calls this once per refresh tick with a single JSON object on stdin
+describing every visible subagent row. We reply with one JSON line per row —
+`{"id": <task id>, "content": <row body>}` — to render a compact, cortext-styled
+line right inside Claude Code's agent panel: model + a token bar + status.
+
+All the data (per-task tokenCount, model, contextWindowSize, status) is supplied
+by the harness, so this is pure formatting — no transcript reading.
+
+  cortext-statusline            # reads stdin, prints override lines
+  cortext-statusline --selftest # formatting self-check
+"""
+import json, sys
+
+BARW = 8
+C = {  # ANSI; harness renders content as-is
+    "dim": "\x1b[2m", "cyan": "\x1b[36m", "green": "\x1b[32m",
+    "yellow": "\x1b[33m", "red": "\x1b[31m", "reset": "\x1b[0m",
+}
+STATUS = {  # substring -> glyph
+    "complet": "✓", "done": "✓", "success": "✓",
+    "run": "●", "active": "●", "progress": "●",
+    "pend": "○", "queue": "○", "wait": "○",
+    "fail": "✗", "error": "✗", "cancel": "✗",
+}
+
+
+def human(n):
+    n = n or 0
+    return f"{n/1000:.1f}k" if n >= 1000 else str(n)
+
+
+def short_model(mid):
+    mid = (mid or "").lower()
+    for tier in ("haiku", "sonnet", "opus", "fable"):
+        if tier in mid:
+            return tier
+    return mid.split("-")[0] if mid else "?"
+
+
+def status_glyph(status):
+    s = (status or "").lower()
+    for key, glyph in STATUS.items():
+        if key in s:
+            return glyph
+    return "●"
+
+
+def bar(frac):
+    frac = max(0.0, min(1.0, frac))
+    fill = round(frac * BARW)
+    return "▓" * fill + "░" * (BARW - fill)
+
+
+def row_content(task):
+    label = task.get("label") or task.get("description") or task.get("name") or task.get("id", "?")
+    label = str(label).replace("\n", " ").strip()
+    if label.lower().startswith("cortext "):
+        label = label[len("cortext "):]
+    label = label[:24]
+    model = short_model(task.get("model"))
+    tok = task.get("tokenCount") or 0
+    ctx = task.get("contextWindowSize")
+    glyph = status_glyph(task.get("status"))
+
+    parts = [f"⛵ {C['dim']}{label}{C['reset']}", f"{C['cyan']}{model}{C['reset']}"]
+    if ctx:
+        pct = round(100 * tok / ctx)
+        parts.append(f"{C['green']}{bar(tok / ctx)}{C['reset']} {pct}%")
+    parts.append(f"{human(tok)} tok")
+    parts.append(glyph)
+    return " · ".join(parts)
+
+
+def run(data):
+    out = []
+    for task in data.get("tasks", []):
+        tid = task.get("id")
+        if tid is None:
+            continue
+        out.append(json.dumps({"id": tid, "content": row_content(task)}))
+    return "\n".join(out)
+
+
+def selftest():
+    data = {
+        "columns": 80,
+        "tasks": [
+            {"id": "a1", "label": "cortext t1", "status": "completed",
+             "model": "claude-haiku-4-5-20251001", "contextWindowSize": 200000, "tokenCount": 1100},
+            {"id": "a2", "description": "cortext t2 fix", "status": "running",
+             "model": "claude-haiku-4-5", "contextWindowSize": 200000, "tokenCount": 463},
+            {"name": "no-id-row", "status": "pending", "tokenCount": 0},  # no id -> skipped
+        ],
+    }
+    lines = [json.loads(l) for l in run(data).splitlines()]
+    assert len(lines) == 2, lines
+    assert lines[0]["id"] == "a1" and "haiku" in lines[0]["content"], lines[0]
+    assert "t1" in lines[0]["content"] and "✓" in lines[0]["content"], lines[0]
+    assert "●" in lines[1]["content"] and "haiku" in lines[1]["content"], lines[1]
+    assert human(1100) == "1.1k" and short_model("claude-opus-4-8") == "opus"
+    assert bar(0.5) == "▓" * 4 + "░" * 4
+    print("selftest ok")
+    return 0
+
+
+def main(argv):
+    if "--selftest" in argv:
+        return selftest()
+    try:
+        data = json.load(sys.stdin)
+    except (ValueError, OSError):
+        return 0
+    text = run(data)
+    if text:
+        print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

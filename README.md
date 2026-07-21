@@ -132,8 +132,32 @@ cortext/
 ├── agents/
 │   ├── ct-haiku-ship.md    # Haiku edit worker (worktree)
 │   └── ct-haiku-scout.md   # Haiku read-only researcher
-└── bin/cortext-monitor     # the TUI (pure-stdlib Python 3, no deps)
+├── settings.json           # registers the subagent status line
+└── bin/
+    ├── cortext-monitor     # the sidecar TUI (pure-stdlib Python 3, no deps)
+    └── cortext-statusline  # native in-terminal subagent status line
 ```
+
+## Two views
+
+cortext gives you the spend in two places:
+
+**1. In Claude Code itself** — the plugin ships a `subagentStatusLine`, so every
+subagent gets a compact cortext-styled row in Claude's own agent panel, no extra
+window:
+
+```
+⛵ t1 · haiku · ▓▓░░░░░░ 8% · 1.1k tok · ✓
+⛵ t2 · haiku · ▓░░░░░░░ 3% · 463 tok · ●
+```
+
+It updates per refresh tick using the token counts + model the harness already
+tracks. Glanceable, but one line each — not the full picture.
+
+**2. The sidecar TUI** (`cortext-monitor`) — a second terminal with the full
+per-agent progress bar, token bar, and live current-action line. Rich and
+continuously updating. A full multi-line live dashboard can't render *inside*
+Claude's chat pane (the harness owns it), which is why this half is a sidecar.
 
 ## Limitations
 
