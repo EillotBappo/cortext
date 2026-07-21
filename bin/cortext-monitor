@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""cortext-monitor — live TUI for cortext subagents.
+
+Reads the active Claude Code session transcript (the JSONL the harness already
+writes) plus the orchestrator's .cortext/tasks.json manifest, and renders a
+per-subagent progress + token dashboard.
+
+Data sources (all native, nothing to instrument):
+  - ~/.claude/projects/<slug>/<newest>.jsonl : per-message token usage + tool_use
+  - ./.cortext/tasks.json                     : labels + progress/token ceilings
+
+Subagents are attributed by the `[cortext:<tag>]` marker the skill puts at the
+start of every subagent prompt.
+
+Usage:
+  cortext-monitor            # live loop in this project
+  cortext-monitor --once     # render one frame and exit (non-TTY / CI)
+  cortext-monitor <path.jsonl>   # watch a specific transcript
+  cortext-monitor --selftest # run parser self-checks
+
+ponytail: progress % is a tool-call estimate (calls/budget), not ground truth —
+it pins at 100% while a subagent keeps going past its budget. Upgrade path: have
+subagents write a real step count to the manifest if a truthful bar is needed.
+"""
+import json, os, re, sys, time, glob
+
+TAG_RE = re.compile(r"\[cortext:([\w.\-]+)\]")
+BARW = 10
+SPIN = "|/-\\"
+
+
+def project_transcript_dir():
+    slug = re.sub(r"[^A-Za-z0-9]", "-", os.getcwd())
+    return os.path.expanduser(f"~/.claude/projects/{slug}")
+
+
+def newest_transcript():
+    d = project_transcript_dir()
+    files = glob.glob(os.path.join(d, "*.jsonl"))
+    return max(files, key=os.path.getmtime) if files else None
+
+
+def load_objs(path):
+    objs = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        objs.append(json.loads(line))
+                    except ValueError:
+                        pass
+    except OSError:
+        pass
+    return objs
+
+
+def load_manifest():
+    try:
+        with open(os.path.join(os.getcwd(), ".cortext", "tasks.json")) as f:
+            return {t["tag"]: t for t in json.load(f) if "tag" in t}
+    except (OSError, ValueError, KeyError):
+        return {}
+
+
+def _short_action(block):
+    name = block.get("name", "?")
+    inp = block.get("input", {}) or {}
+    for k in ("file_path", "command", "pattern", "query", "path", "prompt"):
+        if k in inp and isinstance(inp[k], str):
+            v = inp[k].strip().replace("\n", " ")
+            return f"{name} {v[:44]}"
+    return name
+
+
+def group_sidechains(objs):
+    """Group sidechain messages by their root ancestor so parallel, interleaved
+    subagents stay separate."""
+    by_uuid = {o.get("uuid"): o for o in objs if o.get("uuid")}
+
+    def root(o):
+        cur, seen = o, set()
+        while True:
+            uid = cur.get("uuid")
+            if uid in seen:
+                return uid
+            seen.add(uid)
+            par = by_uuid.get(cur.get("parentUuid"))
+            if par is None or not par.get("isSidechain"):
+                return uid
+            cur = par
+
+    groups = {}
+    for o in objs:
+        if o.get("isSidechain"):
+            groups.setdefault(root(o), []).append(o)
+    return groups
+
+
+def summarize_group(objs):
+    tag = None
+    out_tokens = calls = 0
+    action = None
+    last_stop = None
+    for o in objs:
+        msg = o.get("message") or {}
+        content = msg.get("content")
+        texts = []
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "text":
+                    texts.append(b.get("text", ""))
+                elif b.get("type") == "tool_use":
+                    calls += 1
+                    action = _short_action(b)
+        if tag is None:
+            for t in texts:
+                m = TAG_RE.search(t)
+                if m:
+                    tag = m.group(1)
+                    break
+        u = msg.get("usage") or {}
+        out_tokens += u.get("output_tokens", 0) or 0
+        if msg.get("role") == "assistant":
+            last_stop = msg.get("stop_reason")
+    return {
+        "tag": tag,
+        "out_tokens": out_tokens,
+        "calls": calls,
+        "action": action,
+        "done": last_stop == "end_turn",
+    }
+
+
+def bar(frac):
+    frac = max(0.0, min(1.0, frac))
+    fill = round(frac * BARW)
+    return "▓" * fill + "░" * (BARW - fill)
+
+
+def human(n):
+    return f"{n/1000:.1f}k" if n >= 1000 else str(n)
+
+
+def render(path, manifest, tick):
+    objs = load_objs(path)
+    groups = group_sidechains(objs)
+    rows = [summarize_group(g) for g in groups.values()]
+    tagged = [r for r in rows if r["tag"]]
+    rows = tagged if tagged else rows  # fall back to untagged if none tagged
+
+    lines = [f"cortext monitor  ({os.path.basename(path)})   ^C to quit", ""]
+    if not rows:
+        lines.append("  no cortext subagents yet — dispatch some and they'll appear here")
+    for i, r in enumerate(sorted(rows, key=lambda x: x["tag"] or "")):
+        tag = r["tag"] or f"agent{i+1}"
+        m = manifest.get(tag, {})
+        label = m.get("label", tag)
+        mode = m.get("mode", "?")
+        tool_budget = max(1, m.get("tool_budget", 15))
+        token_budget = max(1, m.get("token_budget", 40000))
+        status = "✓ done" if r["done"] else SPIN[tick % len(SPIN)] + " run"
+        pct = min(100, round(100 * r["calls"] / tool_budget))
+        lines.append(
+            f"  {tag:<6} {mode:<5} {bar(r['calls']/tool_budget)} {pct:3d}%  "
+            f"({r['calls']}/{tool_budget} calls)  {status}"
+        )
+        lines.append(
+            f"         tok  {bar(r['out_tokens']/token_budget)} "
+            f"{human(r['out_tokens'])}/{human(token_budget)}   {label}"
+        )
+        if r["action"]:
+            lines.append(f"         • {r['action']}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def main(argv):
+    if "--selftest" in argv:
+        return selftest()
+    once = "--once" in argv
+    argv = [a for a in argv if not a.startswith("--")]
+    path = argv[0] if argv else newest_transcript()
+    if not path or not os.path.exists(path):
+        print("cortext-monitor: no session transcript found for this project.")
+        print("  looked in:", project_transcript_dir())
+        return 1
+    tick = 0
+    try:
+        while True:
+            manifest = load_manifest()
+            frame = render(path, manifest, tick)
+            if once:
+                print(frame)
+                return 0
+            sys.stdout.write("\x1b[2J\x1b[H" + frame)
+            sys.stdout.flush()
+            tick += 1
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        print()
+        return 0
+
+
+def selftest():
+    objs = [
+        {"uuid": "a1", "isSidechain": True, "parentUuid": "main",
+         "message": {"role": "user", "content": "[cortext:t1] find the bug"}},
+        {"uuid": "a2", "isSidechain": True, "parentUuid": "a1",
+         "message": {"role": "assistant", "stop_reason": "tool_use",
+                     "usage": {"output_tokens": 300},
+                     "content": [{"type": "tool_use", "name": "Read",
+                                  "input": {"file_path": "cart.swift"}}]}},
+        {"uuid": "a3", "isSidechain": True, "parentUuid": "a2",
+         "message": {"role": "assistant", "stop_reason": "end_turn",
+                     "usage": {"output_tokens": 120},
+                     "content": [{"type": "text", "text": "found: cart.swift:42"}]}},
+        # second, interleaved subagent
+        {"uuid": "b1", "isSidechain": True, "parentUuid": "main",
+         "message": {"role": "user", "content": [{"type": "text", "text": "[cortext:t2] fix it"}]}},
+        {"uuid": "b2", "isSidechain": True, "parentUuid": "b1",
+         "message": {"role": "assistant", "stop_reason": "tool_use",
+                     "usage": {"output_tokens": 500},
+                     "content": [{"type": "tool_use", "name": "Edit",
+                                  "input": {"file_path": "cart.swift"}}]}},
+        # a non-sidechain (main thread) line must be ignored
+        {"uuid": "m1", "isSidechain": False,
+         "message": {"role": "assistant", "usage": {"output_tokens": 9999}}},
+    ]
+    groups = group_sidechains(objs)
+    assert len(groups) == 2, f"expected 2 groups, got {len(groups)}"
+    summ = {s["tag"]: s for s in (summarize_group(g) for g in groups.values())}
+    assert set(summ) == {"t1", "t2"}, summ
+    assert summ["t1"]["calls"] == 1 and summ["t1"]["out_tokens"] == 420, summ["t1"]
+    assert summ["t1"]["done"] is True, summ["t1"]
+    assert summ["t2"]["calls"] == 1 and summ["t2"]["out_tokens"] == 500, summ["t2"]
+    assert summ["t2"]["done"] is False, summ["t2"]
+    assert summ["t2"]["action"] == "Edit cart.swift", summ["t2"]["action"]
+    assert bar(0.5) == "▓" * 5 + "░" * 5
+    assert human(8200) == "8.2k" and human(120) == "120"
+    print("selftest ok")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

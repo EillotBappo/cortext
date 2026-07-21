@@ -1,0 +1,11 @@
+{
+  "name": "cortext",
+  "owner": { "name": "EillotBappo" },
+  "plugins": [
+    {
+      "name": "cortext",
+      "source": "./",
+      "description": "Opus thinks, Haiku grinds — scoped delegation to cheap subagents in isolated worktrees with a live token/progress TUI."
+    }
+  ]
+}
