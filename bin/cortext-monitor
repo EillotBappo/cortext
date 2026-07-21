@@ -121,18 +121,21 @@ def summarize_agent(objs):
     tag = agent_id = None
     out_tokens = calls = 0
     action = None
-    last_stop = None
+    last_types = last_role = None
     for o in objs:
         agent_id = agent_id or o.get("agentId")
         msg = o.get("message") or {}
+        role = msg.get("role")
         content = msg.get("content")
-        texts = []
+        texts, types = [], []
         if isinstance(content, str):
             texts.append(content)
+            types.append("text")
         elif isinstance(content, list):
             for b in content:
                 if not isinstance(b, dict):
                     continue
+                types.append(b.get("type"))
                 if b.get("type") == "text":
                     texts.append(b.get("text", ""))
                 elif b.get("type") == "tool_use":
@@ -146,15 +149,19 @@ def summarize_agent(objs):
                     break
         u = msg.get("usage") or {}
         out_tokens += u.get("output_tokens", 0) or 0
-        if msg.get("role") == "assistant":
-            last_stop = msg.get("stop_reason")
+        if role in ("assistant", "user"):
+            last_role, last_types = role, types
+    # Done = last turn is the assistant's final answer (text, no pending tool).
+    # stop_reason is unreliable in per-agent transcripts (often null).
+    done = last_role == "assistant" and "text" in (last_types or []) \
+        and "tool_use" not in (last_types or [])
     return {
         "tag": tag,
         "agent_id": agent_id,
         "out_tokens": out_tokens,
         "calls": calls,
         "action": action,
-        "done": last_stop == "end_turn",
+        "done": done,
     }
 
 
