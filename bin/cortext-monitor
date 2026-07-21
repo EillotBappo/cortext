@@ -119,7 +119,7 @@ def _short_action(block):
 def summarize_agent(objs):
     """Summarize one subagent's transcript (a list of JSONL objects)."""
     tag = agent_id = None
-    out_tokens = calls = 0
+    out_tokens = calls = ctx_tokens = 0
     action = None
     last_types = last_role = None
     for o in objs:
@@ -149,6 +149,15 @@ def summarize_agent(objs):
                     break
         u = msg.get("usage") or {}
         out_tokens += u.get("output_tokens", 0) or 0
+        # ↓ context = the input pushed *down* to the model on one turn (fresh
+        # input + cache reads + cache writes). This is what Claude Code's native
+        # panel shows as "↓ N tokens" — dominated by cache reads, so far bigger
+        # than output. Track the peak turn to reconcile with the native number.
+        turn_ctx = ((u.get("input_tokens", 0) or 0)
+                    + (u.get("cache_read_input_tokens", 0) or 0)
+                    + (u.get("cache_creation_input_tokens", 0) or 0))
+        if turn_ctx > ctx_tokens:
+            ctx_tokens = turn_ctx
         if role in ("assistant", "user"):
             last_role, last_types = role, types
     # Done = last turn is the assistant's final answer (text, no pending tool).
@@ -159,6 +168,7 @@ def summarize_agent(objs):
         "tag": tag,
         "agent_id": agent_id,
         "out_tokens": out_tokens,
+        "ctx_tokens": ctx_tokens,
         "calls": calls,
         "action": action,
         "done": done,
@@ -220,8 +230,8 @@ def render(subdir, manifest, tick):
             f"({r['calls']}/{tool_budget} calls)  {status}"
         )
         lines.append(
-            f"         tok  {bar(r['out_tokens']/token_budget)} "
-            f"{human(r['out_tokens'])}/{human(token_budget)}   {label}"
+            f"         out  {bar(r['out_tokens']/token_budget)} "
+            f"{human(r['out_tokens'])}/{human(token_budget)}  ↓{human(r['ctx_tokens'])} ctx   {label}"
         )
         if r["action"]:
             lines.append(f"         • {r['action']}")
@@ -269,15 +279,17 @@ def selftest():
     objs = [
         {"agentId": "z9", "message": {"role": "user", "content": "[cortext:t1] find the bug"}},
         {"agentId": "z9", "message": {"role": "assistant", "stop_reason": "tool_use",
-         "usage": {"output_tokens": 300},
+         "usage": {"output_tokens": 300, "input_tokens": 8, "cache_read_input_tokens": 55000},
          "content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "cart.swift"}}]}},
         {"agentId": "z9", "message": {"role": "assistant", "stop_reason": "end_turn",
-         "usage": {"output_tokens": 120},
+         "usage": {"output_tokens": 120, "input_tokens": 8, "cache_read_input_tokens": 40000},
          "content": [{"type": "text", "text": "found: cart.swift:42"}]}},
     ]
     s = summarize_agent(objs)
     assert s["tag"] == "t1", s
     assert s["calls"] == 1 and s["out_tokens"] == 420, s
+    # ↓ context is the PEAK turn (55008), not the sum — reconciles with native.
+    assert s["ctx_tokens"] == 55008, s
     assert s["done"] is True, s
     assert s["action"] == "Read cart.swift", s
     assert s["agent_id"] == "z9", s

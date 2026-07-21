@@ -67,9 +67,33 @@ The dashboard joins two sources:
 - **The per-subagent transcripts** that Claude Code writes to
   `~/.claude/projects/<slug>/<session-id>/subagents/agent-*.jsonl` — one file per
   subagent, the native log. For each, the monitor sums `usage.output_tokens` for
-  the **token bar**, counts `tool_use` blocks for the **progress bar**, reads the
+  the **out bar**, counts `tool_use` blocks for the **progress bar**, reads the
   last `tool_use` for the **current-action** line, and detects completion from
   the final `end_turn`.
+
+### `out` vs `↓ctx` — two token numbers, both real
+
+The monitor shows **two** token figures per agent, because they answer different
+questions and differ by ~10×:
+
+- **`out`** — cumulative **output** tokens the subagent generated. This is the
+  work it produced and cortext's real cost signal (output is the expensive half).
+- **`↓ctx`** — the **context pushed down** to the model on its heaviest turn
+  (`input + cache_read + cache_creation`). This is what Claude Code's own agent
+  panel shows as **`↓ N tokens`**. It's dominated by cache reads, so it's large
+  even when the brief is tiny.
+
+So a Haiku scout that read three files and wrote a two-line answer might show
+`5.4k out · ↓39k ctx`: 5.4k of actual work, 39k of (mostly cached, cheap)
+context. If those two numbers looked like they disagreed before — they weren't
+wrong, they were measuring different things.
+
+> **Why is `↓ctx` so big for a tiny brief?** It's fixed per-subagent overhead —
+> the system prompt, **every tool schema**, and any injected `CLAUDE.md` — not
+> your brief. The biggest lever you control: dispatch through `ct-haiku-scout` /
+> `ct-haiku-ship` (4–6 tools each) rather than a full-access `general-purpose`
+> agent, which loads *every* tool schema into context. Most of `↓ctx` is
+> `cache_read`, billed at ~0.1×, so a big number is not a big bill.
 
 > The progress % is an honest **estimate** — `tool_calls / budget`. It's a
 > liveness signal, not a promise; it pins at 100% if an agent runs past its
@@ -80,10 +104,10 @@ The dashboard joins two sources:
 cortext monitor  (a1b2c3.jsonl)   ^C to quit
 
   t1     scout ▓▓▓▓▓▓▓░░░  72%  (13/18 calls)  ✓ done
-         tok  ▓▓░░░░░░░░ 8.2k/40.0k   audit auth callers
+         out  ▓▓░░░░░░░░ 8.2k/40.0k  ↓39.3k ctx   audit auth callers
          • Read auth.swift
   t2     ship  ▓▓▓░░░░░░░  31%  (6/20 calls)   / run
-         tok  ▓░░░░░░░░░ 3.1k/60.0k   fix null deref in cart
+         out  ▓░░░░░░░░░ 3.1k/60.0k  ↓54.6k ctx   fix null deref in cart
          • Edit cart.swift
 ```
 
@@ -152,12 +176,14 @@ subagent gets a compact cortext-styled row in Claude's own agent panel, no extra
 window:
 
 ```
-⛵ t1 · haiku · ▓▓░░░░░░ 8% · 1.1k tok · ✓
-⛵ t2 · haiku · ▓░░░░░░░ 3% · 463 tok · ●
+⛵ t1 · haiku · 1.1k out · ✓
+⛵ t2 · haiku · 463 out · ●
 ```
 
-It updates per refresh tick using the token counts + model the harness already
-tracks. Glanceable, but one line each — not the full picture.
+It updates per refresh tick using the output-token count + model the harness
+passes to `subagentStatusLine`. That payload carries no context-size field, so
+the `↓ctx` view lives only in the sidecar monitor. Glanceable, but one line each
+— not the full picture.
 
 **2. The sidecar TUI** (`cortext-monitor`) — a second terminal with the full
 per-agent progress bar, token bar, and live current-action line. Rich and
