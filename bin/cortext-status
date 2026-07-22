@@ -27,6 +27,8 @@ except Exception:
 
 def human(n):
     n = n or 0
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
     return f"{n/1000:.1f}k" if n >= 1000 else str(n)
 
 
@@ -77,7 +79,8 @@ def cortext_summary(root, subdir):
     running = next((r["tag"] for r in sorted(rows, key=lambda x: x["tag"]) if not r["done"]), None)
     frac = done / total if total else 0.0
     tail = f" · {running} run" if running else " · ✓"
-    return f"⛵ {_mon.bar(frac)} {done}/{total} · {human(out)} out{tail}"
+    off = _mon.offloaded(rows)
+    return f"⛵ {_mon.bar(frac)} {done}/{total} · {human(out)} out · {human(off)} off-ctx{tail}"
 
 
 def render(data):

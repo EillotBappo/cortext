@@ -207,7 +207,16 @@ def bar(frac):
 
 
 def human(n):
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
     return f"{n/1000:.1f}k" if n >= 1000 else str(n)
+
+
+def offloaded(rows):
+    """Tokens the cheap crew held that never touched your main agent's context —
+    the peak context each subagent carried, summed. This is the token-save story:
+    grunt-work context ground on Haiku instead of piling into your Opus window."""
+    return sum(r["ctx_tokens"] for r in rows)
 
 
 def _int(v, default):
@@ -261,6 +270,15 @@ def render(subdir, manifest, tick):
         if r["action"]:
             lines.append(f"         • {r['action']}")
         lines.append("")
+    if rows:
+        out_total = sum(r["out_tokens"] for r in rows)
+        off = offloaded(rows)
+        # cortext's whole pitch, in tokens: grunt work ran on cheap Haiku and
+        # never entered your main agent's context.
+        lines.append(
+            f"  Σ {len(rows)} agents · {human(out_total)} out · "
+            f"~{human(off)} tokens ground on Haiku, off your main context"
+        )
     return "\n".join(lines)
 
 
@@ -345,6 +363,12 @@ def selftest():
     assert s["done"] is True, s
     assert s["action"] == "Read cart.swift", s
     assert s["agent_id"] == "z9", s
+
+    # token-save: offloaded = sum of each agent's PEAK ctx (55008 here), not a
+    # per-turn sum — so it doesn't double-count the re-read cache each turn.
+    assert offloaded([s]) == 55008, offloaded([s])
+    assert offloaded([s, s]) == 110016, offloaded([s, s])
+    assert human(1_400_000) == "1.4M" and human(93000) == "93.0k"
 
     # list-form content on the initial user prompt, unfinished agent
     s2 = summarize_agent([

@@ -7,18 +7,29 @@ pushes the grunt work down to cheap Haiku subagents — each one handed the
 *minimum* context it needs, running in its own isolated git worktree, with a
 live terminal dashboard showing exactly where your tokens are going.
 
-Inspired by [firstmate](https://github.com/kunchenguid/firstmate)'s crew model,
-but pointed at a different problem. firstmate is about **parallel isolation** —
-you supervise several full peer agents in separate windows. cortext is about
-**cost economy + visibility**:
+Most subagent tooling runs peer agents on your *own* model with *full* context
+and leaves the spend invisible. cortext is built around the opposite bet — that
+the cheap way is the right way when the work is grunt work:
 
-| | firstmate | cortext |
-|---|---|---|
-| Subagent model | same as yours | **cheap Haiku** |
-| Context per agent | full | **minimal scoped brief** |
-| Focus | parallel PRs | **spend less, see the spend** |
-| Isolation | worktrees | worktrees (kept) |
-| UI | tmux windows | **token + progress TUI** |
+- **Cheap by default.** Every subagent runs on **Haiku**, not your planner
+  model. The expensive model only plans and integrates; it never grinds.
+- **Minimal context, on purpose.** Each subagent gets a *scoped brief* — the
+  exact paths and one success criterion, nothing else — dispatched through a
+  4–6 tool agent type so its context isn't bloated by tool schemas it'll never
+  use. Small context is the whole point, not a side effect.
+- **The spend is the product.** A live token/progress TUI, inline agent-panel
+  rows, and a main-status-line summary all show where tokens go and how much
+  grunt-work context stayed off your main window. You never fly blind.
+- **Isolated, never colliding.** Every `ship` subtask edits in its own git
+  worktree, so parallel edits can't step on each other.
+
+On a fan-out task, this keeps **~99% of tokens off your expensive planner model**
+and runs **50–96% cheaper** than doing it natively — [reproducible numbers
+below](#cortext-vs-the-native-approach), not a marketing claim.
+
+> Inspired by [firstmate](https://github.com/kunchenguid/firstmate)'s crew
+> model — cortext takes the crew idea somewhere else: cheap over peer, scoped
+> over full, and spend you can see.
 
 ## How it works
 
@@ -100,6 +111,28 @@ wrong, they were measuring different things.
 > budget rather than faking "done". Completion is detected from the subagent's
 > final `end_turn`.
 
+### The bottom line: tokens saved
+
+cortext exists to keep grunt work off your expensive main context, so the
+dashboard closes with the number that proves it — a **`Σ` footer** in tokens:
+
+```
+Σ 2 agents · 11.3k out · ~93k tokens ground on Haiku, off your main context
+```
+
+`off your main context` sums the **peak context each subagent carried** — the
+files it read, the tool schemas it loaded, the work it churned through. Every
+one of those tokens ran on cheap Haiku instead of piling into your Opus window.
+That's the token save: your planner stays lean while the crew absorbs the bulk.
+The same `off-ctx` figure also rides the main status line, so you see it live
+without a second terminal.
+
+> It's the **peak** context per agent, summed — not a per-turn total. The same
+> cached tool schemas get re-read every turn; counting the peak once per agent
+> avoids inflating the number by double-counting those re-reads. So it's an
+> honest floor for "context that never touched your main agent," not a padded
+> headline.
+
 ```
 cortext monitor  (a1b2c3.jsonl)   ^C to quit
 
@@ -109,6 +142,8 @@ cortext monitor  (a1b2c3.jsonl)   ^C to quit
   t2     ship  ▓▓▓░░░░░░░  31%  (6/20 calls)   / run
          out  ▓░░░░░░░░░ 3.1k/60.0k  ↓54.6k ctx   fix null deref in cart
          • Edit cart.swift
+
+  Σ 2 agents · 11.3k out · ~93k tokens ground on Haiku, off your main context
 ```
 
 ## Install
@@ -181,7 +216,8 @@ cortext/
     ├── cortext-monitor     # the sidecar TUI (pure-stdlib Python 3, no deps)
     ├── cortext-statusline  # per-subagent rows (with progress bar) in the agent panel
     ├── cortext-status      # main status-line: normal line + live run summary
-    └── cortext-suggest     # UserPromptSubmit hook: nudges toward delegation
+    ├── cortext-suggest     # UserPromptSubmit hook: nudges toward delegation
+    └── cortext-bench       # models the token/cost trade vs the native approaches
 ```
 
 ## Two views
@@ -205,7 +241,7 @@ cortext gives you the spend in two places:
   and nothing extra when it's idle:
 
   ```
-  Opus 4.8  my-app  main   ⛵ 3/5 · 218k out · t4 run
+  Opus 4.8  my-app  main   ⛵ 3/5 · 218k out · 1.2M off-ctx · t4 run
   ```
 
 Between the two, everyday runs never need the sidecar.
@@ -223,10 +259,52 @@ A `UserPromptSubmit` hook (`cortext-suggest`) watches for fan-out-shaped prompts
 consider the `delegate` skill. It's deliberately quiet: it stays silent on
 single-target tasks and when you've already said "cortext".
 
+## cortext vs the native approach
+
+What does delegating through cortext actually buy you over just letting Claude
+do the work? There are two native baselines:
+
+- **inline-opus** — one Opus agent grinds the whole fan-out in a single,
+  ever-growing context. Every file it reads and every token it writes is on the
+  expensive model, and the planner's context balloons with grunt work.
+- **native-subs** — N native `Task` subagents on the **default (Opus) model**,
+  each a full-access agent that loads *every* tool schema. Expensive model
+  *and* the largest per-agent context overhead — the exact failure mode cortext
+  is built to avoid.
+
+`bin/cortext-bench` models both against cortext across four use cases. Run it
+yourself (`cortext-bench`) — the assumptions are visible, tunable constants at
+the top of the file, so these are reproducible numbers, not a marketing claim:
+
+| Use case | Expensive-model tokens offloaded | Cheaper than inline-opus | Cheaper than native-subs |
+|---|---|---|---|
+| Wide audit — 8 read-only scouts | **99%** (358k → 4k) | **62%** | **96%** |
+| Batch edit — 12 mechanical edits | **99%** | **50%** | **96%** |
+| Small fan-out — 3 checks | **99%** | **68%** | **96%** |
+| Big refactor — 20 call sites | **99%** | **72%** | **96%** |
+
+*(cost in relative units — a Haiku token = 1, an Opus token = 15, ~their list-price
+ratio. Prompt-cache discounts are ignored, which is conservative against cortext:
+its per-agent schema overhead is mostly cached, so real savings run higher.)*
+
+**The one honest catch:** cortext moves *more raw tokens* in total — each scoped
+subagent re-pays a ~15k tool-schema overhead, so a 20-way fan-out processes far
+more tokens than one inline agent would. But those tokens run on cheap Haiku and,
+crucially, **stay off your planner's context** — which is why the expensive-model
+count drops ~99% while the blended cost still falls 50–72%. You trade abundant
+cheap tokens for scarce expensive ones.
+
+**When it does *not* help:** a single subtask with nothing to run alongside it.
+There's no parallelism to win and you still pay the orchestration round-trip plus
+one subagent's schema overhead — just do it inline. cortext's edge is *breadth*:
+2+ independent pieces. The `delegate` skill enforces exactly this bar.
+
 ## Limitations
 
 - The monitor needs **Python 3** (standard library only — nothing to install).
 - Progress % is a tool-call estimate, not a true step count (see above).
+- The `Σ` off-context total sums each agent's peak context (not a per-turn sum),
+  so it's an honest floor for tokens kept off your main agent — not an upper bound.
 - Subagent model control depends on your harness honouring `model: haiku` in the
   agent definition / Agent tool call.
 
