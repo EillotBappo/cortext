@@ -41,8 +41,22 @@ def git_branch(root):
     return head[:7] if head else None  # detached HEAD → short sha
 
 
-def cortext_summary(root):
-    """'3/5 · 218k out · t4 run' for the active run, or None if none is active.
+def session_subdir(data, root):
+    """The subagents dir for THIS session — no 'newest' guessing, so a second
+    Claude session in the same project can't hijack the summary. Claude Code puts
+    the session's transcript path (and id) in the statusLine payload."""
+    tpath = data.get("transcript_path") if isinstance(data, dict) else None
+    if tpath:
+        return _mon._subagents_of(tpath)  # .../<session_id>/subagents
+    sid = data.get("session_id") if isinstance(data, dict) else None
+    if sid:
+        base = os.path.expanduser("~/.claude/projects")
+        return os.path.join(base, _mon._slug(root), sid, "subagents")
+    return _mon.newest_subagents_dir()  # last resort (no session info in payload)
+
+
+def cortext_summary(root, subdir):
+    """'▓▓░ 3/5 · 218k out · t4 run' for the active run, or None if none is active.
     Active = a manifest exists and fresh agent transcripts sit at/after its mtime."""
     if _mon is None:
         return None
@@ -51,7 +65,6 @@ def cortext_summary(root):
         cutoff = os.path.getmtime(os.path.join(root, ".cortext", "tasks.json"))
     except OSError:
         return None
-    subdir = _mon.newest_subagents_dir()
     files = [f for f in _mon.agent_files(subdir)
              if os.path.getmtime(f) >= cutoff - 1]
     rows = [_mon.summarize_agent(_mon.load_objs(f)) for f in files]
@@ -81,7 +94,7 @@ def render(data):
     if br:
         parts.append(br)
     line = "  ".join(parts)
-    summary = cortext_summary(root)
+    summary = cortext_summary(root, session_subdir(data, root))
     return f"{line}   {summary}" if summary else line
 
 
@@ -95,6 +108,11 @@ def selftest():
     # bad payloads never crash
     assert isinstance(render([]), str) and isinstance(render("x"), str)
     assert human(218000) == "218.0k"
+    # session targeting: transcript_path wins over 'newest' guessing
+    sub = session_subdir({"transcript_path": "/a/b/SID123.jsonl"}, "/r")
+    assert sub.endswith(os.path.join("SID123", "subagents")), sub
+    sub2 = session_subdir({"session_id": "ZZ"}, "/proj")
+    assert sub2.endswith(os.path.join("ZZ", "subagents")) and "proj" in sub2, sub2
     print("selftest ok")
     return 0
 
