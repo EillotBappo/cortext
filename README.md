@@ -176,34 +176,52 @@ cortext/
 ├── agents/
 │   ├── ct-haiku-ship.md    # Haiku edit worker (worktree)
 │   └── ct-haiku-scout.md   # Haiku read-only researcher
-├── settings.json           # registers the subagent status line
+├── settings.json           # registers both status lines + the suggest hook
 └── bin/
     ├── cortext-monitor     # the sidecar TUI (pure-stdlib Python 3, no deps)
-    └── cortext-statusline  # native in-terminal subagent status line
+    ├── cortext-statusline  # per-subagent rows (with progress bar) in the agent panel
+    ├── cortext-status      # main status-line: normal line + live run summary
+    └── cortext-suggest     # UserPromptSubmit hook: nudges toward delegation
 ```
 
 ## Two views
 
 cortext gives you the spend in two places:
 
-**1. In Claude Code itself** — the plugin ships a `subagentStatusLine`, so every
-subagent gets a compact cortext-styled row in Claude's own agent panel, no extra
-window:
+**1. In Claude Code itself — no second window needed.** Two native surfaces:
 
-```
-⛵ t1 · haiku · 1.1k out · ✓
-⛵ t2 · haiku · 463 out · ●
-```
+- **Per-subagent rows** (`subagentStatusLine`): each subagent gets a compact
+  cortext row in Claude's agent panel, now with a live **progress bar** — the
+  statusline joins each row to its own transcript by agent id and reads the
+  manifest budget, so you see calls-vs-budget inline:
 
-It updates per refresh tick using the output-token count + model the harness
-passes to `subagentStatusLine`. That payload carries no context-size field, so
-the `↓ctx` view lives only in the sidecar monitor. Glanceable, but one line each
-— not the full picture.
+  ```
+  ⛵ t1 · haiku · ▓▓▓▓░░░░ 50% (6/12) · 1.1k out · ●
+  ⛵ t2 · haiku · ▓▓▓▓▓▓▓▓ 100% (20/20) · 6.0k out · ✓
+  ```
 
-**2. The sidecar TUI** (`cortext-monitor`) — a second terminal with the full
-per-agent progress bar, token bar, and live current-action line. Rich and
-continuously updating. A full multi-line live dashboard can't render *inside*
-Claude's chat pane (the harness owns it), which is why this half is a sidecar.
+- **Main status line** (`statusLine`, `cortext-status`): your normal line
+  (model · dir · branch) with a run summary appended while cortext is active,
+  and nothing extra when it's idle:
+
+  ```
+  Opus 4.8  my-app  main   ⛵ 3/5 · 218k out · t4 run
+  ```
+
+Between the two, everyday runs never need the sidecar.
+
+**2. The sidecar TUI** (`cortext-monitor`) — optional second terminal with the
+full-screen dashboard: per-agent bars, the `↓ctx` context column, and the live
+current-action line. Reach for it when you want the rich continuous view; a full
+multi-line live dashboard can't render *inside* Claude's chat pane (the harness
+owns it), which is why this half stays a sidecar.
+
+### Organic activation
+
+A `UserPromptSubmit` hook (`cortext-suggest`) watches for fan-out-shaped prompts
+— "across all…", "for each…", several file paths — and drops a one-line nudge to
+consider the `delegate` skill. It's deliberately quiet: it stays silent on
+single-target tasks and when you've already said "cortext".
 
 ## Limitations
 

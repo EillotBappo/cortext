@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""cortext-status — main statusLine renderer with an inline cortext run summary.
+
+Claude Code calls this once per refresh with a session JSON on stdin. We render a
+normal status line (model · dir · git branch) and, WHEN a cortext run is active,
+append a one-glance summary — `⛵ 3/5 · 218k out · t4 run` — so live progress lives
+in the main bar without a second terminal. When no run is active it's just a plain
+status line, so it never leaves the bar empty.
+
+Because this claims the single main statusLine slot, it renders a sensible default
+rather than hijacking it with cortext-only content.
+
+  cortext-status            # reads stdin, prints one status line
+  cortext-status --selftest # self-check
+"""
+import json, os, sys
+from importlib.machinery import SourceFileLoader
+
+try:
+    _mon = SourceFileLoader(
+        "cortext_monitor",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cortext-monitor"),
+    ).load_module()
+except Exception:
+    _mon = None
+
+
+def human(n):
+    n = n or 0
+    return f"{n/1000:.1f}k" if n >= 1000 else str(n)
+
+
+def git_branch(root):
+    try:
+        with open(os.path.join(root, ".git", "HEAD")) as f:
+            head = f.read().strip()
+    except OSError:
+        return None
+    if head.startswith("ref: refs/heads/"):
+        return head[len("ref: refs/heads/"):]
+    return head[:7] if head else None  # detached HEAD → short sha
+
+
+def cortext_summary(root):
+    """'3/5 · 218k out · t4 run' for the active run, or None if none is active.
+    Active = a manifest exists and fresh agent transcripts sit at/after its mtime."""
+    if _mon is None:
+        return None
+    manifest = _mon.manifest_at(root)
+    try:
+        cutoff = os.path.getmtime(os.path.join(root, ".cortext", "tasks.json"))
+    except OSError:
+        return None
+    subdir = _mon.newest_subagents_dir()
+    files = [f for f in _mon.agent_files(subdir)
+             if os.path.getmtime(f) >= cutoff - 1]
+    rows = [_mon.summarize_agent(_mon.load_objs(f)) for f in files]
+    rows = [r for r in rows if r["tag"]]
+    if not rows:
+        return None
+    total = max(len(manifest), len(rows)) if manifest else len(rows)
+    done = sum(1 for r in rows if r["done"])
+    out = sum(r["out_tokens"] for r in rows)
+    running = next((r["tag"] for r in sorted(rows, key=lambda x: x["tag"]) if not r["done"]), None)
+    tail = f" · {running} run" if running else " · ✓ all done"
+    return f"⛵ {done}/{total} · {human(out)} out{tail}"
+
+
+def render(data):
+    data = data if isinstance(data, dict) else {}
+    ws = data.get("workspace") or {}
+    root = (os.environ.get("CLAUDE_PROJECT_DIR")
+            or ws.get("project_dir") or ws.get("current_dir")
+            or data.get("cwd") or os.getcwd())
+    cur = ws.get("current_dir") or data.get("cwd") or root
+    model = (data.get("model") or {}).get("display_name") or "?"
+
+    parts = [model, os.path.basename(os.path.normpath(cur)) or cur]
+    br = git_branch(root)
+    if br:
+        parts.append(br)
+    line = "  ".join(parts)
+    summary = cortext_summary(root)
+    return f"{line}   {summary}" if summary else line
+
+
+def selftest():
+    data = {"model": {"display_name": "Opus 4.8"},
+            "workspace": {"current_dir": "/tmp/proj", "project_dir": "/tmp/proj"}}
+    line = render(data)
+    assert "Opus 4.8" in line and "proj" in line, line
+    # no active run → no cortext suffix, plain line
+    assert "⛵" not in line, line
+    # bad payloads never crash
+    assert isinstance(render([]), str) and isinstance(render("x"), str)
+    assert human(218000) == "218.0k"
+    print("selftest ok")
+    return 0
+
+
+def main(argv):
+    if "--selftest" in argv:
+        return selftest()
+    try:
+        data = json.load(sys.stdin)
+    except (ValueError, OSError):
+        data = {}
+    print(render(data))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

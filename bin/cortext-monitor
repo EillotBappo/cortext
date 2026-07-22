@@ -84,6 +84,30 @@ def agent_files(subdir):
     return sorted(glob.glob(os.path.join(subdir, "agent-*.jsonl"))) if subdir else []
 
 
+def find_agent_file(agent_id):
+    """Locate one subagent transcript by id, independent of cwd — statuslines and
+    hooks may run from a worktree, not the project root. Returns None if absent."""
+    if not agent_id:
+        return None
+    aid = agent_id[len("agent-"):] if agent_id.startswith("agent-") else agent_id
+    base = os.path.expanduser("~/.claude/projects")
+    hits = glob.glob(os.path.join(base, "*", "*", "subagents", f"agent-{aid}.jsonl"))
+    return max(hits, key=os.path.getmtime) if hits else None
+
+
+def manifest_at(root):
+    """Load the cortext manifest from an explicit project root (CLAUDE_PROJECT_DIR),
+    not cwd — the statusline/hook cwd may be a worktree where .cortext is absent."""
+    try:
+        with open(os.path.join(root, ".cortext", "tasks.json")) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, list):
+        return {}
+    return {t["tag"]: t for t in data if isinstance(t, dict) and "tag" in t}
+
+
 def load_objs(path):
     objs = []
     try:
@@ -101,16 +125,10 @@ def load_objs(path):
 
 
 def load_manifest():
-    try:
-        with open(os.path.join(os.getcwd(), ".cortext", "tasks.json")) as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
     # LLM-authored: may not be a list, or may hold non-dict junk. `"tag" in t`
-    # on a non-dict (e.g. an int) raises TypeError and kills every render tick.
-    if not isinstance(data, list):
-        return {}
-    return {t["tag"]: t for t in data if isinstance(t, dict) and "tag" in t}
+    # on a non-dict (e.g. an int) raises TypeError and kills every render tick —
+    # manifest_at() validates the shape and drops junk.
+    return manifest_at(os.getcwd())
 
 
 def _short_action(block):

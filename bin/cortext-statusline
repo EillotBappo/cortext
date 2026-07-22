@@ -4,16 +4,22 @@
 Claude Code calls this once per refresh tick with a single JSON object on stdin
 describing every visible subagent row. We reply with one JSON line per row —
 `{"id": <task id>, "content": <row body>}` — to render a compact, cortext-styled
-line right inside Claude Code's agent panel: model + a token bar + status.
+line right inside Claude Code's agent panel: model · progress bar · out · status.
 
-All the data (per-task tokenCount, model, contextWindowSize, status) is supplied
-by the harness, so this is pure formatting — no transcript reading.
+The harness payload carries model / tokenCount / status per row but NOT tool-call
+progress, so for the progress bar we join each row to its own transcript by agent
+id (reusing the monitor's parser) and read the manifest budget from
+CLAUDE_PROJECT_DIR. If a transcript or budget can't be found the row still renders
+— just without the bar. This makes the inline rows as informative as the sidecar
+monitor, so a second terminal is optional.
 
   cortext-statusline            # reads stdin, prints override lines
   cortext-statusline --selftest # formatting self-check
 """
-import json, sys
+import json, os, sys
+from importlib.machinery import SourceFileLoader
 
+BARW = 8
 C = {  # ANSI; harness renders content as-is
     "dim": "\x1b[2m", "cyan": "\x1b[36m", "green": "\x1b[32m",
     "yellow": "\x1b[33m", "red": "\x1b[31m", "reset": "\x1b[0m",
@@ -24,6 +30,16 @@ STATUS = {  # substring -> glyph
     "pend": "○", "queue": "○", "wait": "○",
     "fail": "✗", "error": "✗", "cancel": "✗",
 }
+
+# Reuse the monitor's transcript parser so the two views never drift. Import is
+# side-effect-free (its main() is guarded). If it can't load, degrade to no-bar.
+try:
+    _mon = SourceFileLoader(
+        "cortext_monitor",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cortext-monitor"),
+    ).load_module()
+except Exception:
+    _mon = None
 
 
 def human(n):
@@ -47,7 +63,27 @@ def status_glyph(status):
     return "●"
 
 
-def row_content(task):
+def bar(frac):
+    frac = max(0.0, min(1.0, frac))
+    fill = round(frac * BARW)
+    return "▓" * fill + "░" * (BARW - fill)
+
+
+def _progress(task, manifest):
+    """(bar_str, pct) from the row's own transcript + manifest budget, or None."""
+    if _mon is None:
+        return None
+    agent_id = task.get("agentId") or task.get("agent_id") or task.get("id")
+    tf = _mon.find_agent_file(agent_id)
+    if not tf:
+        return None
+    s = _mon.summarize_agent(_mon.load_objs(tf))
+    budget = max(1, _mon._int(manifest.get(s["tag"], {}).get("tool_budget"), 15))
+    calls = s["calls"]
+    return bar(calls / budget), min(100, round(100 * calls / budget)), calls, budget
+
+
+def row_content(task, manifest):
     label = task.get("label") or task.get("description") or task.get("name") or task.get("id", "?")
     label = str(label).replace("\n", " ").strip()
     if label.lower().startswith("cortext "):
@@ -57,32 +93,31 @@ def row_content(task):
     tok = task.get("tokenCount") or 0
     glyph = status_glyph(task.get("status"))
 
-    # `tokenCount` here is the subagent's *output* — the work it produced, and
-    # cortext's real cost signal. It is NOT the "↓ N tokens" the native panel
-    # shows (that's context pushed down: input + cache reads, far larger). Label
-    # it "out" so the two numbers aren't mistaken for each other. The payload
-    # carries no context-size field, so the ↓ context view lives in the sidecar
-    # monitor, which reads it from the transcript.
-    # ponytail: dropped the old tok/contextWindowSize bar — output÷window is a
-    # meaningless ~3% and read as "context used". Add a real bar back only if the
-    # harness starts passing a context-size field to subagentStatusLine.
     parts = [f"⛵ {C['dim']}{label}{C['reset']}", f"{C['cyan']}{model}{C['reset']}"]
+    prog = _progress(task, manifest)
+    if prog:
+        b, pct, calls, budget = prog
+        parts.append(f"{C['green']}{b}{C['reset']} {pct}% ({calls}/{budget})")
+    # `tokenCount` is the subagent's *output* — cortext's real cost signal, NOT
+    # the native panel's "↓ N" (context pushed down). Labelled "out" to disambiguate.
     parts.append(f"{human(tok)} out")
     parts.append(glyph)
     return " · ".join(parts)
 
 
 def run(data):
-    out = []
     if not isinstance(data, dict):
         return ""
+    root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    manifest = _mon.manifest_at(root) if _mon else {}
+    out = []
     for task in data.get("tasks", []):
         if not isinstance(task, dict):
             continue
         tid = task.get("id")
         if tid is None:
             continue
-        out.append(json.dumps({"id": tid, "content": row_content(task)}))
+        out.append(json.dumps({"id": tid, "content": row_content(task, manifest)}))
     return "\n".join(out)
 
 
@@ -91,12 +126,14 @@ def selftest():
         "columns": 80,
         "tasks": [
             {"id": "a1", "label": "cortext t1", "status": "completed",
-             "model": "claude-haiku-4-5-20251001", "contextWindowSize": 200000, "tokenCount": 1100},
+             "model": "claude-haiku-4-5-20251001", "tokenCount": 1100},
             {"id": "a2", "description": "cortext t2 fix", "status": "running",
-             "model": "claude-haiku-4-5", "contextWindowSize": 200000, "tokenCount": 463},
+             "model": "claude-haiku-4-5", "tokenCount": 463},
             {"name": "no-id-row", "status": "pending", "tokenCount": 0},  # no id -> skipped
         ],
     }
+    # No real transcripts for these fake ids → _progress returns None → no bar,
+    # exactly the graceful-degrade path. Rows must still render.
     lines = [json.loads(l) for l in run(data).splitlines()]
     assert len(lines) == 2, lines
     assert lines[0]["id"] == "a1" and "haiku" in lines[0]["content"], lines[0]
@@ -104,6 +141,7 @@ def selftest():
     assert "●" in lines[1]["content"] and "haiku" in lines[1]["content"], lines[1]
     assert "out" in lines[0]["content"], lines[0]  # output labelled, not "tok"
     assert human(1100) == "1.1k" and short_model("claude-opus-4-8") == "opus"
+    assert bar(0.5) == "▓" * 4 + "░" * 4
     # harness stdin is trusted-ish but must never crash the panel.
     assert run([]) == "" and run("nope") == "" and run({"tasks": ["x", 1]}) == ""
     print("selftest ok")

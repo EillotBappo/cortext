@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""cortext-suggest — UserPromptSubmit hook that nudges toward delegation.
+
+Claude Code runs this on every prompt with `{"prompt": "..."}` on stdin. If the
+prompt clearly describes fan-out work — many independent targets, "across all",
+"for each", several file paths — we print ONE line to stdout, which Claude Code
+injects as context so the model considers the cortext `delegate` skill.
+
+Deliberately conservative: a nudge on every prompt is noise, so we fire only on
+strong breadth signals and stay silent when the prompt already mentions cortext
+(you've clearly decided) or looks like a single-target task.
+
+  cortext-suggest            # reads stdin, maybe prints a nudge
+  cortext-suggest --selftest # detector self-check
+"""
+import json, re, sys
+
+# Plural-able nouns that signal breadth when preceded by every/all/N.
+_NOUN = (r"(?:file|view|screen|function|component|test|module|endpoint|model|page|"
+         r"route|call ?site|button|label|item|card|row|string|field|icon|tab|cell|"
+         r"chip|warning|error|method|class|struct|property|import|place|retailer)s?")
+
+# Strong, low-false-positive breadth signals. Each is sufficient on its own.
+_STRONG = [
+    r"\bacross (all|every|the (whole|entire)|both)\b",
+    r"\bfor each\b", r"\beach of\b", r"\bone (per|for each)\b",
+    r"\b(every|each|all|all the|all of the) (single |the )?" + _NOUN + r"\b",
+    r"\b(audit|refactor|rename|migrate|convert|update|add \w+ to|remove \w+ from) [^.]*\b(all|every|each|across|everywhere|throughout)\b",
+    r"\b\d+ " + _NOUN + r"\b",
+    r"\beverywhere\b",
+]
+_PATH_RE = re.compile(r"\S+\.(swift|py|ts|tsx|js|jsx|go|rs|java|kt|rb|md|json|yaml|yml)\b", re.I)
+
+
+def looks_like_fanout(prompt):
+    p = (prompt or "").lower()
+    if not p.strip() or "cortext" in p or "delegate" in p:
+        return False
+    if any(re.search(rx, p) for rx in _STRONG):
+        return True
+    # 3+ distinct file paths named in one prompt → breadth worth fanning out
+    if len({m.group(0).lower() for m in _PATH_RE.finditer(prompt or "")}) >= 3:
+        return True
+    return False
+
+
+NUDGE = ("💡 cortext: this looks parallelizable across independent pieces — "
+         "consider the `delegate` skill to fan it out to cheap Haiku subagents.")
+
+
+def selftest():
+    hit = [
+        "audit error handling across all the view files",
+        "add accessibility labels to every button",
+        "rename fetchData everywhere",
+        "update a.swift, b.swift and c.swift to use the new API",
+        "for each retailer, verify the scraper still works",
+    ]
+    miss = [
+        "fix the null deref in cart.swift",
+        "what does this function do?",
+        "use cortext to audit all the views",   # already decided → silent
+        "explain how delegate works",
+        "add a label to this button",
+    ]
+    for p in hit:
+        assert looks_like_fanout(p), f"should fire: {p}"
+    for p in miss:
+        assert not looks_like_fanout(p), f"should stay silent: {p}"
+    print("selftest ok")
+    return 0
+
+
+def main(argv):
+    if "--selftest" in argv:
+        return selftest()
+    try:
+        data = json.load(sys.stdin)
+    except (ValueError, OSError):
+        return 0
+    prompt = data.get("prompt") if isinstance(data, dict) else None
+    if looks_like_fanout(prompt):
+        print(NUDGE)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
