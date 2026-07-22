@@ -69,6 +69,16 @@ below](#cortext-vs-the-native-approach), not a marketing claim.
 > `.cortext/` is created in your repo to hold the run manifest. Add `.cortext/`
 > to your `.gitignore` so it never lands in a commit.
 
+> ## Limitations
+
+- The monitor needs **Python 3** (standard library only — nothing to install).
+- Progress % is a tool-call estimate, not a true step count (see above).
+- The `Σ` off-context total sums each agent's peak context (not a per-turn sum),
+  so it's an honest floor for tokens kept off your main agent — not an upper bound.
+- Subagent model control depends on your harness honouring `model: haiku` in the
+  agent definition / Agent tool call.
+
+
 ### Where the numbers come from
 
 The dashboard joins two sources:
@@ -279,15 +289,58 @@ planner's context. You trade many cheap tokens for few expensive ones.
 **When it doesn't help:** a single task with nothing alongside it — no
 parallelism to win, so just do it inline. cortext's edge is breadth: 2+
 independent pieces.
+## Orchestration Benchmark — Code-Audit Task
 
-## Limitations
+Comparison of four ways to run the same read-only code-audit task (scan a fixed
+set of files, count references, flag lines needing change). Same task, same file
+batches, same prompt across the agent runs — only the orchestrator / model differ.
 
-- The monitor needs **Python 3** (standard library only — nothing to install).
-- Progress % is a tool-call estimate, not a true step count (see above).
-- The `Σ` off-context total sums each agent's peak context (not a per-turn sum),
-  so it's an honest floor for tokens kept off your main agent — not an upper bound.
-- Subagent model control depends on your harness honouring `model: haiku` in the
-  agent definition / Agent tool call.
+| Metric | grep (0 agents) | Workflow (9× Haiku) | Agent tool (9× Haiku) | Agent tool (9× Opus) |
+|---|---|---|---|---|
+| Agents | 0 | 9 | 9 | 9 |
+| Tokens used | ~few k | 683,617 | 635,730 | 871,398 |
+| Tool uses | 3 | 78 | 55 | 69 |
+| Wall-clock | <2s | ~84s | ~40s | ~121s |
+| Items scanned | 55 | 55 | 55 | 54 |
+| Reference count (truth = 140) | 140 | 141 | 154 | 139 |
+| Real change-sites flagged | 53 | 53 | 76 | 76 |
+| Change-sites reported (raw) | 53 | 53 | ~90 | ~158 |
+
+### Findings
+
+- **Deterministic tooling (grep) vs LLM agents:** for a pure count, grep was ~2
+  orders of magnitude cheaper (~few k vs ~640–870k tokens) and exact, but only
+  finds patterns explicitly named — it missed a category of change-sites nobody
+  grepped for.
+- **Workflow vs raw Agent tool (both Haiku):** near-tie on tokens (683k vs 636k).
+  The Workflow cost ~7% more tokens and ~2× wall-time — overhead from
+  structured-output schema (forced tool call + retries) plus orchestration. Its
+  upside is the schema guarantee + deterministic replay/journal.
+- **Opus vs Haiku (same Agent-tool harness):** both flagged the **same 76 real
+  change-sites** — Opus found no additional breakage. Opus cost **+37% tokens**,
+  **~3× wall-time**, and (at ~5× per-token price) roughly **~7× more money** for
+  identical coverage.
+  - Opus was more accurate on the raw reference count (139 vs truth 140; Haiku
+    over-counted at 154) and reasoned deeper (traced downstream consumers, flagged
+    dead imports).
+  - Opus was less reliable on completeness — it silently **dropped one item**
+    (returned 54/55), where Haiku returned all 55. Its raw change-site count was
+    also the noisiest (inflated by counting downstream references).
+
+### Takeaway
+
+| Goal | Best choice |
+|---|---|
+| Exact count of known patterns | grep — cheapest, exact |
+| Find real change-sites cheaply | Agent tool + Haiku — same coverage as Opus, ~40% the cost, fastest |
+| Plan the actual edit (downstream refs, dead code) | Agent tool + Opus — richer reasoning, but pricier and dropped an item |
+| Determinism / structured guarantee / replay | Workflow orchestration |
+
+Net: on this task a bigger model paid **~7× more for zero extra coverage** — its
+value was reasoning depth and count accuracy, not finding more. Match the tool to
+the goal: deterministic search for counts, cheap parallel agents for breadth,
+premium models only where reasoning depth actually changes the outcome.
+
 
 ## License
 
