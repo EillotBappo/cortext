@@ -82,56 +82,34 @@ The dashboard joins two sources:
   last `tool_use` for the **current-action** line, and detects completion from
   the final `end_turn`.
 
-### `out` vs `↓ctx` — two token numbers, both real
+Each agent shows **two** token numbers:
 
-The monitor shows **two** token figures per agent, because they answer different
-questions and differ by ~10×:
+- **`out`** — output tokens the subagent generated. cortext's real cost signal.
+- **`↓ctx`** — context pushed down on its heaviest turn (mostly cached tool
+  schemas + system prompt). Large even for a tiny brief, but billed at ~0.1×.
 
-- **`out`** — cumulative **output** tokens the subagent generated. This is the
-  work it produced and cortext's real cost signal (output is the expensive half).
-- **`↓ctx`** — the **context pushed down** to the model on its heaviest turn
-  (`input + cache_read + cache_creation`). This is what Claude Code's own agent
-  panel shows as **`↓ N tokens`**. It's dominated by cache reads, so it's large
-  even when the brief is tiny.
+<details><summary>Why <code>↓ctx</code> is big but not a big bill</summary>
 
-So a Haiku scout that read three files and wrote a two-line answer might show
-`5.4k out · ↓39k ctx`: 5.4k of actual work, 39k of (mostly cached, cheap)
-context. If those two numbers looked like they disagreed before — they weren't
-wrong, they were measuring different things.
-
-> **Why is `↓ctx` so big for a tiny brief?** It's fixed per-subagent overhead —
-> the system prompt, **every tool schema**, and any injected `CLAUDE.md` — not
-> your brief. The biggest lever you control: dispatch through `ct-haiku-scout` /
-> `ct-haiku-ship` (4–6 tools each) rather than a full-access `general-purpose`
-> agent, which loads *every* tool schema into context. Most of `↓ctx` is
-> `cache_read`, billed at ~0.1×, so a big number is not a big bill.
-
-> The progress % is an honest **estimate** — `tool_calls / budget`. It's a
-> liveness signal, not a promise; it pins at 100% if an agent runs past its
-> budget rather than faking "done". Completion is detected from the subagent's
-> final `end_turn`.
+`↓ctx` is fixed per-subagent overhead — system prompt, every tool schema,
+injected `CLAUDE.md` — not your brief. Dispatching through the scoped
+`ct-haiku-*` agents (4–6 tools) instead of a full-access `general-purpose` agent
+(every tool schema) is the biggest lever you control. Most of `↓ctx` is
+`cache_read`, billed ~0.1×. Progress % is an estimate (`tool_calls / budget`) —
+a liveness signal that pins at 100% past budget rather than faking "done".
+</details>
 
 ### The bottom line: tokens saved
 
-cortext exists to keep grunt work off your expensive main context, so the
-dashboard closes with the number that proves it — a **`Σ` footer** in tokens:
+The dashboard closes with the number that proves the whole point — a **`Σ`
+footer** counting the grunt-work context that ran on Haiku and never touched
+your Opus window:
 
 ```
 Σ 2 agents · 11.3k out · ~93k tokens ground on Haiku, off your main context
 ```
 
-`off your main context` sums the **peak context each subagent carried** — the
-files it read, the tool schemas it loaded, the work it churned through. Every
-one of those tokens ran on cheap Haiku instead of piling into your Opus window.
-That's the token save: your planner stays lean while the crew absorbs the bulk.
-The same `off-ctx` figure also rides the main status line, so you see it live
-without a second terminal.
-
-> It's the **peak** context per agent, summed — not a per-turn total. The same
-> cached tool schemas get re-read every turn; counting the peak once per agent
-> avoids inflating the number by double-counting those re-reads. So it's an
-> honest floor for "context that never touched your main agent," not a padded
-> headline.
+That same `off-ctx` figure also rides the main status line, so you see the save
+live without a second terminal.
 
 ```
 cortext monitor  (a1b2c3.jsonl)   ^C to quit
@@ -259,45 +237,48 @@ A `UserPromptSubmit` hook (`cortext-suggest`) watches for fan-out-shaped prompts
 consider the `delegate` skill. It's deliberately quiet: it stays silent on
 single-target tasks and when you've already said "cortext".
 
-## cortext vs the native approach
+## cortext vs. doing it natively
 
-What does delegating through cortext actually buy you over just letting Claude
-do the work? There are two native baselines:
+Take a real fan-out task — *audit error handling across 8 view files*. Here's
+how many tokens hit your **expensive** planner model under each approach:
 
-- **inline-opus** — one Opus agent grinds the whole fan-out in a single,
-  ever-growing context. Every file it reads and every token it writes is on the
-  expensive model, and the planner's context balloons with grunt work.
-- **native-subs** — N native `Task` subagents on the **default (Opus) model**,
-  each a full-access agent that loads *every* tool schema. Expensive model
-  *and* the largest per-agent context overhead — the exact failure mode cortext
-  is built to avoid.
+```
+Tokens on your EXPENSIVE model  (lower is better)
 
-`bin/cortext-bench` models both against cortext across four use cases. Run it
-yourself (`cortext-bench`) — the assumptions are visible, tunable constants at
-the top of the file, so these are reproducible numbers, not a marketing claim:
+  native subagents  ██████████████████████████████████  358k
+  one Opus agent    ████······························   38k
+  cortext           ·································    4k
+```
 
-| Use case | Expensive-model tokens offloaded | Cheaper than inline-opus | Cheaper than native-subs |
-|---|---|---|---|
-| Wide audit — 8 read-only scouts | **99%** (358k → 4k) | **62%** | **96%** |
-| Batch edit — 12 mechanical edits | **99%** | **50%** | **96%** |
-| Small fan-out — 3 checks | **99%** | **68%** | **96%** |
-| Big refactor — 20 call sites | **99%** | **72%** | **96%** |
+cortext runs the grunt work on cheap Haiku, so your Opus model barely touches it
+— **~99% fewer expensive tokens**. Same story for blended cost:
 
-*(cost in relative units — a Haiku token = 1, an Opus token = 15, ~their list-price
-ratio. Prompt-cache discounts are ignored, which is conservative against cortext:
-its per-agent schema overhead is mostly cached, so real savings run higher.)*
+```
+Blended cost  (Haiku token = 1, Opus token = 15 — the ~list-price ratio)
 
-**The one honest catch:** cortext moves *more raw tokens* in total — each scoped
-subagent re-pays a ~15k tool-schema overhead, so a 20-way fan-out processes far
-more tokens than one inline agent would. But those tokens run on cheap Haiku and,
-crucially, **stay off your planner's context** — which is why the expensive-model
-count drops ~99% while the blended cost still falls 50–72%. You trade abundant
-cheap tokens for scarce expensive ones.
+  native subagents  ██████████████████████████████████  5.4M
+  one Opus agent    ████······························  576k
+  cortext           █································  218k
+```
 
-**When it does *not* help:** a single subtask with nothing to run alongside it.
-There's no parallelism to win and you still pay the orchestration round-trip plus
-one subagent's schema overhead — just do it inline. cortext's edge is *breadth*:
-2+ independent pieces. The `delegate` skill enforces exactly this bar.
+That's **96% cheaper than native subagents**, 62% cheaper than one Opus agent.
+The pattern holds across use cases (run `cortext-bench` — the numbers are
+reproducible, the assumptions are editable constants at the top of the script):
+
+| Use case | Cheaper than native | Cheaper than one Opus agent |
+|---|---|---|
+| Wide audit — 8 scouts | **96%** | **62%** |
+| Batch edit — 12 edits | **96%** | **50%** |
+| Small fan-out — 3 checks | **96%** | **68%** |
+| Big refactor — 20 sites | **96%** | **72%** |
+
+**The honest catch:** cortext processes *more raw tokens* overall (each subagent
+re-pays a tool-schema overhead) — but they're cheap Haiku tokens, off your
+planner's context. You trade many cheap tokens for few expensive ones.
+
+**When it doesn't help:** a single task with nothing alongside it — no
+parallelism to win, so just do it inline. cortext's edge is breadth: 2+
+independent pieces.
 
 ## Limitations
 

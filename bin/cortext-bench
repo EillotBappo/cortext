@@ -74,9 +74,37 @@ def _human(n):
     return f"{n/1000:.0f}k" if n >= 1000 else str(n)
 
 
+def barchart(title, rows, width=34):
+    """rows = [(label, value)]. Horizontal bars scaled to the largest value."""
+    hi = max((v for _, v in rows), default=0) or 1
+    out = [title, ""]
+    for label, v in rows:
+        fill = round(width * v / hi)
+        bar = "█" * fill + "·" * (width - fill)
+        out.append(f"  {label:<13} {bar} {_human(v)}")
+    return "\n".join(out)
+
+
 def render():
+    # Hero: one scenario shown as bar charts — the headline anyone can grok in a
+    # glance. Lower is better on both.
+    name, n, ctx, out = SCENARIOS[0]
+    c = costs(n, ctx, out)
+    order = ("native-subs", "inline-opus", "cortext")
     lines = [
-        "cortext-bench — modelled token/cost comparison (assumptions in --help)",
+        "cortext-bench — modelled comparison vs the native approaches",
+        "(assumptions in --help; lower is better)",
+        "",
+        barchart(f"Tokens on your EXPENSIVE model — {name} (x{n}):",
+                 [(a, c[a][0]) for a in order]),
+        "",
+        barchart(f"Blended cost (Haiku token=1, Opus=15) — {name} (x{n}):",
+                 [(a, c[a][2]) for a in order]),
+        "",
+        f"  → cortext puts ~99% fewer tokens on the expensive model and costs",
+        f"    {_pct(c['native-subs'][2], c['cortext'][2])}% less than native subagents.",
+        "",
+        "  All four use cases:",
         "",
         f"  {'approach':<14}{'opus tok':>9}   {'cost':>7}   {'vs cortext':<14}",
         "  " + "-" * 50,
@@ -126,6 +154,9 @@ def selftest():
     assert _pct(c["inline-opus"][2], c["cortext"][2]) == 62
     assert _pct(c["native-subs"][2], c["cortext"][2]) == 96
     assert _human(1_500_000) == "1.5M" and _human(38_400) == "38k" and _human(500) == "500"
+    # barchart: the max value fills the whole width, a 0 fills none.
+    chart = barchart("t", [("big", 100), ("zero", 0)], width=10)
+    assert "█" * 10 in chart and "·" * 10 in chart, chart
     print("selftest ok")
     return 0
 
