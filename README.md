@@ -23,9 +23,10 @@ the cheap way is the right way when the work is grunt work:
 - **Isolated, never colliding.** Every `ship` subtask edits in its own git
   worktree, so parallel edits can't step on each other.
 
-On a fan-out task, this keeps **~99% of tokens off your expensive planner model**
-and runs **50–96% cheaper** than doing it natively — [reproducible numbers
-below](#cortext-vs-the-native-approach), not a marketing claim.
+In a [side-by-side audit benchmark](#benchmark-cheap-agents-vs-a-premium-model),
+cheap Haiku subagents found **the exact same 76 change-sites as a premium Opus
+run** — using **27% fewer tokens** and finishing in **a third of the wall-clock**.
+A bigger model paid ~7× more for zero extra coverage.
 
 > Inspired by [firstmate](https://github.com/kunchenguid/firstmate)'s crew
 > model — cortext takes the crew idea somewhere else: cheap over peer, scoped
@@ -68,16 +69,6 @@ below](#cortext-vs-the-native-approach), not a marketing claim.
 
 > `.cortext/` is created in your repo to hold the run manifest. Add `.cortext/`
 > to your `.gitignore` so it never lands in a commit.
-
-> ## Limitations
-
-- The monitor needs **Python 3** (standard library only — nothing to install).
-- Progress % is a tool-call estimate, not a true step count (see above).
-- The `Σ` off-context total sums each agent's peak context (not a per-turn sum),
-  so it's an honest floor for tokens kept off your main agent — not an upper bound.
-- Subagent model control depends on your harness honouring `model: haiku` in the
-  agent definition / Agent tool call.
-
 
 ### Where the numbers come from
 
@@ -204,8 +195,7 @@ cortext/
     ├── cortext-monitor     # the sidecar TUI (pure-stdlib Python 3, no deps)
     ├── cortext-statusline  # per-subagent rows (with progress bar) in the agent panel
     ├── cortext-status      # main status-line: normal line + live run summary
-    ├── cortext-suggest     # UserPromptSubmit hook: nudges toward delegation
-    └── cortext-bench       # models the token/cost trade vs the native approaches
+    └── cortext-suggest     # UserPromptSubmit hook: nudges toward delegation
 ```
 
 ## Two views
@@ -247,100 +237,50 @@ A `UserPromptSubmit` hook (`cortext-suggest`) watches for fan-out-shaped prompts
 consider the `delegate` skill. It's deliberately quiet: it stays silent on
 single-target tasks and when you've already said "cortext".
 
-## cortext vs. doing it natively
+## Benchmark: cheap agents vs. a premium model
 
-Take a real fan-out task — *audit error handling across 8 view files*. Here's
-how many tokens hit your **expensive** planner model under each approach:
-
-```
-Tokens on your EXPENSIVE model  (lower is better)
-
-  native subagents  ██████████████████████████████████  358k
-  one Opus agent    ████······························   38k
-  cortext           ·································    4k
-```
-
-cortext runs the grunt work on cheap Haiku, so your Opus model barely touches it
-— **~99% fewer expensive tokens**. Same story for blended cost:
+We ran the same **read-only code-audit** four ways — grep, a structured Workflow,
+and the Agent tool on both Haiku and Opus. Here's the cost of each, with the
+coverage it achieved (measured, not modelled — [full table + method](BENCHMARK.md)):
 
 ```
-Blended cost  (Haiku token = 1, Opus token = 15 — the ~list-price ratio)
+Tokens to complete the same code-audit  (lower is better)
 
-  native subagents  ██████████████████████████████████  5.4M
-  one Opus agent    ████······························  576k
-  cortext           █································  218k
+  cortext · 9× Haiku    █████████████████████████·········  636k   → 76 sites found
+  Workflow · 9× Haiku   ███████████████████████████·······  684k   → 53 sites found
+  Agent tool · 9× Opus  ██████████████████████████████████  871k   → 76 sites found
+
+  grep · no agents: ~few k tokens, exact — but only finds the 53 patterns you name
 ```
 
-That's **96% cheaper than native subagents**, 62% cheaper than one Opus agent.
-The pattern holds across use cases (run `cortext-bench` — the numbers are
-reproducible, the assumptions are editable constants at the top of the script):
+**cortext (cheap Haiku agents) found the exact same 76 change-sites as the
+premium Opus run** — using 27% fewer tokens (636k vs 871k) and finishing in a
+third of the wall-clock (40s vs 121s). At Opus's ~5×/token price that's roughly
+**~7× less money for identical coverage.** Opus even silently dropped one item
+(54/55 scanned) where Haiku returned all 55.
 
-| Use case | Cheaper than native | Cheaper than one Opus agent |
-|---|---|---|
-| Wide audit — 8 scouts | **96%** | **62%** |
-| Batch edit — 12 edits | **96%** | **50%** |
-| Small fan-out — 3 checks | **96%** | **68%** |
-| Big refactor — 20 sites | **96%** | **72%** |
+The honest part: Opus wasn't useless — it counted references more accurately and
+reasoned deeper (traced downstream consumers, flagged dead imports). Its value is
+**reasoning depth, not finding more.** So match the tool to the goal:
 
-**The honest catch:** cortext processes *more raw tokens* overall (each subagent
-re-pays a tool-schema overhead) — but they're cheap Haiku tokens, off your
-planner's context. You trade many cheap tokens for few expensive ones.
-
-**When it doesn't help:** a single task with nothing alongside it — no
-parallelism to win, so just do it inline. cortext's edge is breadth: 2+
-independent pieces.
-## Orchestration Benchmark — Code-Audit Task
-
-Comparison of four ways to run the same read-only code-audit task (scan a fixed
-set of files, count references, flag lines needing change). Same task, same file
-batches, same prompt across the agent runs — only the orchestrator / model differ.
-
-| Metric | grep (0 agents) | Workflow (9× Haiku) | Agent tool (9× Haiku) | Agent tool (9× Opus) |
-|---|---|---|---|---|
-| Agents | 0 | 9 | 9 | 9 |
-| Tokens used | ~few k | 683,617 | 635,730 | 871,398 |
-| Tool uses | 3 | 78 | 55 | 69 |
-| Wall-clock | <2s | ~84s | ~40s | ~121s |
-| Items scanned | 55 | 55 | 55 | 54 |
-| Reference count (truth = 140) | 140 | 141 | 154 | 139 |
-| Real change-sites flagged | 53 | 53 | 76 | 76 |
-| Change-sites reported (raw) | 53 | 53 | ~90 | ~158 |
-
-### Findings
-
-- **Deterministic tooling (grep) vs LLM agents:** for a pure count, grep was ~2
-  orders of magnitude cheaper (~few k vs ~640–870k tokens) and exact, but only
-  finds patterns explicitly named — it missed a category of change-sites nobody
-  grepped for.
-- **Workflow vs raw Agent tool (both Haiku):** near-tie on tokens (683k vs 636k).
-  The Workflow cost ~7% more tokens and ~2× wall-time — overhead from
-  structured-output schema (forced tool call + retries) plus orchestration. Its
-  upside is the schema guarantee + deterministic replay/journal.
-- **Opus vs Haiku (same Agent-tool harness):** both flagged the **same 76 real
-  change-sites** — Opus found no additional breakage. Opus cost **+37% tokens**,
-  **~3× wall-time**, and (at ~5× per-token price) roughly **~7× more money** for
-  identical coverage.
-  - Opus was more accurate on the raw reference count (139 vs truth 140; Haiku
-    over-counted at 154) and reasoned deeper (traced downstream consumers, flagged
-    dead imports).
-  - Opus was less reliable on completeness — it silently **dropped one item**
-    (returned 54/55), where Haiku returned all 55. Its raw change-site count was
-    also the noisiest (inflated by counting downstream references).
-
-### Takeaway
-
-| Goal | Best choice |
+| Goal | Best tool |
 |---|---|
-| Exact count of known patterns | grep — cheapest, exact |
-| Find real change-sites cheaply | Agent tool + Haiku — same coverage as Opus, ~40% the cost, fastest |
-| Plan the actual edit (downstream refs, dead code) | Agent tool + Opus — richer reasoning, but pricier and dropped an item |
-| Determinism / structured guarantee / replay | Workflow orchestration |
+| Exact count of known patterns | **grep** — cheapest, exact |
+| Find the real change-sites cheaply | **cortext (Haiku agents)** — Opus coverage, ~⅓ the money, fastest |
+| Plan the edit (downstream refs, dead code) | **Opus agent** — deeper reasoning, but pricier |
+| Determinism / structured replay | **Workflow** |
 
-Net: on this task a bigger model paid **~7× more for zero extra coverage** — its
-value was reasoning depth and count accuracy, not finding more. Match the tool to
-the goal: deterministic search for counts, cheap parallel agents for breadth,
-premium models only where reasoning depth actually changes the outcome.
+cortext owns the middle: breadth coverage at cheap-agent cost. See
+[BENCHMARK.md](BENCHMARK.md) for the full numbers and caveats.
 
+## Limitations
+
+- The monitor needs **Python 3** (standard library only — nothing to install).
+- Progress % is a tool-call estimate, not a true step count (see above).
+- The `Σ` off-context total sums each agent's peak context (not a per-turn sum),
+  so it's an honest floor for tokens kept off your main agent — not an upper bound.
+- Subagent model control depends on your harness honouring `model: haiku` in the
+  agent definition / Agent tool call.
 
 ## License
 
