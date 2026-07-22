@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""cortext-verify — deterministic coverage gate for a cortext run.
+
+The audit benchmark exposed two agent-side failures that a premium model did NOT
+fix: completeness (an Opus run silently returned 54/55 items) and over-counting
+(Haiku reported 154 refs against a true 140). cortext closes both with a coverage
+contract that neither the native Agent tool nor Workflow enforce:
+
+  1. the orchestrator records what each subtask must cover in .cortext/tasks.json
+     via an `expects` field,
+  2. each subagent ends its result with a machine-checkable `cortext-coverage:`
+     line,
+  3. this tool reconciles the two and EXITS NON-ZERO on any gap — so a run can't
+     be declared done while an item is missing or under-covered.
+
+Manifest entry:
+    { "tag": "t1", "label": "...", "expects": 12 }                      # min count
+    { "tag": "t2", "label": "...", "expects": ["a.swift", "b.swift"] }  # required ids
+
+Subagent result must contain a line like:
+    cortext-coverage: 12
+    cortext-coverage: a.swift, b.swift
+
+  cortext-verify            # reconcile the active run; exit 1 on any gap
+  cortext-verify <dir>      # verify a specific subagents/ directory
+  cortext-verify --selftest # self-check
+"""
+import os, re, sys
+from importlib.machinery import SourceFileLoader
+
+_mon = SourceFileLoader(
+    "cortext_monitor",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "cortext-monitor"),
+).load_module()
+
+COV_RE = re.compile(r"cortext-coverage:\s*(.+)", re.I)
+
+
+def _texts(objs):
+    out = []
+    for o in objs:
+        c = (o.get("message") or {}).get("content")
+        if isinstance(c, str):
+            out.append(c)
+        elif isinstance(c, list):
+            for b in c:
+                if isinstance(b, dict) and b.get("type") == "text":
+                    out.append(b.get("text", ""))
+    return out
+
+
+def parse_coverage(text):
+    """(count|None, ids:set) from the LAST cortext-coverage: line in `text`.
+    A bare integer is a count; anything else is a comma/space-separated id list."""
+    val = None
+    for line in text.splitlines():
+        m = COV_RE.search(line)
+        if m:
+            val = m.group(1).strip()
+    if val is None:
+        return None, set()
+    if re.fullmatch(r"\d+", val):
+        return int(val), set()
+    ids = {x for x in re.split(r"[,\s]+", val) if x}
+    return len(ids), ids
+
+
+def agent_coverage(subdir):
+    """{tag: (count, ids)} for each subagent transcript carrying a coverage line."""
+    out = {}
+    for f in _mon.agent_files(subdir):
+        blob = "\n".join(_texts(_mon.load_objs(f)))
+        tag_m = _mon.TAG_RE.search(blob)
+        if tag_m:
+            out[tag_m.group(1)] = parse_coverage(blob)
+    return out
+
+
+def reconcile(manifest, coverage):
+    """Yield (tag, ok, detail) for every manifest task that declares `expects`."""
+    for tag, task in manifest.items():
+        exp = task.get("expects")
+        if exp is None:
+            continue
+        cnt, ids = coverage.get(tag, (None, set()))
+        if cnt is None:
+            yield tag, False, "no coverage reported (subagent missing or no cortext-coverage: line)"
+        elif isinstance(exp, list):
+            missing = [x for x in exp if x not in ids]
+            yield (tag, not missing,
+                   f"missing {len(missing)}: {', '.join(map(str, missing[:6]))}"
+                   if missing else f"all {len(exp)} ids covered")
+        else:
+            try:
+                need = int(exp)
+            except (TypeError, ValueError):
+                yield tag, True, f"expects not int/list, skipped: {exp!r}"
+                continue
+            yield tag, cnt >= need, f"covered {cnt}/{need}"
+
+
+def run(root, subdir):
+    manifest = _mon.manifest_at(root)
+    declared = [t for t, task in manifest.items() if task.get("expects") is not None]
+    if not declared:
+        return ("cortext-verify: no `expects` in .cortext/tasks.json — nothing to "
+                "reconcile. Add expects to gate coverage."), 0
+    results = sorted(reconcile(manifest, agent_coverage(subdir)))
+    gaps = sum(1 for _, ok, _ in results if not ok)
+    lines = [f"  {'✓' if ok else '✗'} {tag}: {detail}" for tag, ok, detail in results]
+    head = f"cortext-verify: {len(declared) - gaps}/{len(declared)} subtasks fully covered"
+    if gaps:
+        head += "  — re-dispatch the ✗ subtasks before declaring done"
+    return head + "\n" + "\n".join(lines), (1 if gaps else 0)
+
+
+def selftest():
+    assert parse_coverage("cortext-coverage: 12")[0] == 12
+    assert parse_coverage("x\ncortext-coverage: a.swift, b.swift\n")[1] == {"a.swift", "b.swift"}
+    assert parse_coverage("no marker") == (None, set())
+    assert parse_coverage("cortext-coverage: 1\ncortext-coverage: 5")[0] == 5  # last wins
+    assert _texts([{"message": {"content": [{"type": "text", "text": "hi"}]}}]) == ["hi"]
+
+    man = {"t1": {"tag": "t1", "expects": 12},
+           "t2": {"tag": "t2", "expects": ["a", "b"]},
+           "t3": {"tag": "t3"}}  # no expects -> skipped
+    res = {t: (ok, d) for t, ok, d in reconcile(man, {"t1": (10, set()), "t2": (1, {"a"})})}
+    assert res["t1"][0] is False and "10/12" in res["t1"][1], res
+    assert res["t2"][0] is False and "missing 1" in res["t2"][1], res
+    assert "t3" not in res, res
+    # fully satisfied
+    ok2 = {t: ok for t, ok, _ in reconcile(man, {"t1": (12, set()), "t2": (2, {"a", "b"})})}
+    assert ok2 == {"t1": True, "t2": True}, ok2
+    # a declared tag with no agent result at all is a gap, not a pass
+    miss = {t: ok for t, ok, _ in reconcile({"tX": {"tag": "tX", "expects": 3}}, {})}
+    assert miss["tX"] is False, miss
+    print("selftest ok")
+    return 0
+
+
+def main(argv):
+    if "--selftest" in argv:
+        return selftest()
+    args = [a for a in argv if not a.startswith("--")]
+    root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    subdir = args[0] if args else _mon.newest_subagents_dir()
+    if not subdir:
+        print("cortext-verify: no Claude Code sessions found.")
+        return 1
+    text, code = run(root, subdir)
+    print(text)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

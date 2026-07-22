@@ -16,6 +16,10 @@ Rules:
   - `changed:` files + one line each on what changed
   - `verified:` how you checked (or "not checked")
   - `notes:` anything the orchestrator must know (blockers, surprises) — else omit
+- **If the brief gave you an expected file/id list**, end with a coverage line the
+  orchestrator's gate reads: `cortext-coverage: file1, file2, ...` (the files you
+  actually edited) or `cortext-coverage: <n>`. Report what you truly did — do not
+  inflate it to match the target.
 - No prose, no preamble, no summary of these rules. Minimal tokens.
 
 If the brief is missing context you genuinely need, say so in `notes:` and stop —

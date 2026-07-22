@@ -18,6 +18,17 @@ dependency yourself or sequence them — don't fake parallelism.
 
 ## The loop
 
+0. **Ground first — deterministic tools before agents.** If any part of the task
+   is *countable or enumerable* (count references, list call sites, find files
+   matching a pattern), run `rg`/`grep`/`ast-grep` FIRST to get an exact
+   inventory. Then hand each subagent its slice of that inventory to *judge or
+   verify* — do not make agents *discover* the set. This is why cortext beats a
+   raw Haiku agent on the same task: in the benchmark, agents left to discover
+   over-counted (154 refs vs a true 140), while a grep gives the exact
+   denominator for free. Agents add judgment (which sites truly need changing);
+   deterministic tools supply the ground truth. Skip this only when the task has
+   no enumerable structure.
+
 1. **Decompose.** Break the task into independent subtasks. For each, decide a
    **mode**:
    - `scout` — read-only. Research, audit, "find where X happens", "does Y hold".
@@ -30,13 +41,18 @@ dependency yourself or sequence them — don't fake parallelism.
 
    ```json
    [
-     { "tag": "t1", "label": "audit auth callers", "mode": "scout", "tool_budget": 12, "token_budget": 40000 },
-     { "tag": "t2", "label": "fix null deref in cart", "mode": "ship", "tool_budget": 20, "token_budget": 60000 }
+     { "tag": "t1", "label": "audit auth callers", "mode": "scout", "tool_budget": 12, "token_budget": 40000, "expects": 140 },
+     { "tag": "t2", "label": "fix null deref in cart", "mode": "ship", "tool_budget": 20, "token_budget": 60000, "expects": ["cart.swift", "checkout.swift"] }
    ]
    ```
    `tool_budget` = your honest estimate of how many tool calls the subtask needs
    (it's the progress-bar denominator). `token_budget` = the token-bar ceiling.
-   Keep tags short and unique.
+   `expects` (optional but strongly recommended when you grounded in step 0) = the
+   **coverage contract**: an integer minimum count, or the exact list of item ids
+   the subtask must return. `cortext-verify` reconciles this against what the
+   subagent reports and fails the run on any gap — this is what stops a subtask
+   from silently returning 54/55 (the exact completeness failure the benchmark
+   caught a premium model committing). Keep tags short and unique.
 
 3. **Tell the user to watch (once per session).** Say:
    > Run `cortext-monitor` in a second terminal to watch progress live.
@@ -58,9 +74,13 @@ dependency yourself or sequence them — don't fake parallelism.
    - **The prompt MUST start with `[cortext:<tag>]`** — this is how the dashboard
      attributes tokens and tool calls to the right task. Then a **minimal brief**:
      - the exact files/paths/symbols it needs (paths, not pasted contents — let it
-       read what it needs),
+       read what it needs) — for a scout, its slice of the step-0 inventory,
      - one crisp success criterion,
      - "return a terse structured result: what you changed / what you found. No prose."
+     - **if you set `expects`**, tell it to end with a `cortext-coverage:` line —
+       the count it handled, or the ids it covered (e.g. `cortext-coverage: 140`
+       or `cortext-coverage: cart.swift, checkout.swift`). This is the machine-
+       checkable half of the coverage contract.
 
    **Minimal-context rule:** never dump whole files or the whole task into a
    brief. Give the subagent the narrow slice its subtask needs and nothing else.
@@ -80,6 +100,19 @@ dependency yourself or sequence them — don't fake parallelism.
    Review that diff, then apply the same change to your working tree
    (`git apply`, or just redo the edit yourself). Decide the next round or
    finish. Re-dispatch only what actually needs redoing.
+
+6. **Reconcile coverage before declaring done.** If you set any `expects`, run
+   `cortext-verify` (exits non-zero on any gap):
+
+   ```
+   cortext-verify        # ✗ any subtask that under-covered → re-dispatch just those
+   ```
+
+   Also cross-check counts against your step-0 deterministic inventory — if a
+   scout reports more hits than grep found, it's over-counting (dedupe / demote
+   to candidates), not finding extra. Do NOT tell the user the task is complete
+   while `cortext-verify` is red. This gate is cortext's edge over the raw Agent
+   tool: same cheap Haiku cost, but provably complete and grounded.
 
    **Sequential rounds on the same file:** a worktree's base is a snapshot taken
    at dispatch. If a *later* round edits a file an *earlier* round already

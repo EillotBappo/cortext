@@ -195,7 +195,8 @@ cortext/
     ├── cortext-monitor     # the sidecar TUI (pure-stdlib Python 3, no deps)
     ├── cortext-statusline  # per-subagent rows (with progress bar) in the agent panel
     ├── cortext-status      # main status-line: normal line + live run summary
-    └── cortext-suggest     # UserPromptSubmit hook: nudges toward delegation
+    ├── cortext-suggest     # UserPromptSubmit hook: nudges toward delegation
+    └── cortext-verify      # deterministic coverage gate: fails a run with gaps
 ```
 
 ## Two views
@@ -273,6 +274,37 @@ reasoned deeper (traced downstream consumers, flagged dead imports). Its value i
 cortext owns the middle: breadth coverage at cheap-agent cost. See
 [BENCHMARK.md](BENCHMARK.md) for the full numbers and caveats.
 
+### Closing the two gaps the benchmark exposed
+
+Plain Haiku agents matched Opus on coverage but had two weaknesses — and *so did
+Opus*. cortext's discipline is built to beat both on exactly these axes, without
+paying for a bigger model:
+
+- **Over-counting** (Haiku reported 154 refs vs a true 140) → **ground first.**
+  The orchestrator runs `rg`/`grep`/`ast-grep` for the exact inventory *before*
+  dispatching, then hands each scout its slice to *judge*, not *discover*. Grep
+  supplies the denominator; agents supply the judgment. No agent guesses a count.
+- **Silently dropping items** (Opus returned 54/55) → **a coverage gate.** Each
+  subtask can declare `expects` (a count or an id list) in the manifest; each
+  subagent ends with a `cortext-coverage:` line; **`cortext-verify` reconciles
+  the two and exits non-zero on any gap**, so a run can't be called done while an
+  item is unaccounted for:
+
+  ```
+  $ cortext-verify
+  cortext-verify: 1/2 subtasks fully covered  — re-dispatch the ✗ subtasks
+    ✓ t1: covered 140/140
+    ✗ t2: missing 1: checkout.swift
+  ```
+
+- **Noisy raw output** (Haiku's ~90 raw hits → 76 real) → the scout contract now
+  splits `confirmed:` from `candidate:` and forbids padding the confirmed set
+  with downstream references.
+
+Net: same cheap-Haiku cost as the raw Agent tool, but **grounded** (exact counts)
+and **provably complete** (the gate is red until every expected item is covered)
+— the two things a premium model charged ~7× more for and *still* got wrong.
+
 ## Limitations
 
 - The monitor needs **Python 3** (standard library only — nothing to install).
@@ -281,6 +313,10 @@ cortext owns the middle: breadth coverage at cheap-agent cost. See
   so it's an honest floor for tokens kept off your main agent — not an upper bound.
 - Subagent model control depends on your harness honouring `model: haiku` in the
   agent definition / Agent tool call.
+- `cortext-verify` gates on *reported* coverage — it catches a subagent that
+  under-reports or goes missing, but can't detect one that *claims* an id it
+  didn't truly cover. Grounding the `expects` list from step-0 grep (not from the
+  agent) is what keeps the contract honest.
 
 ## License
 
