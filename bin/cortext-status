@@ -62,8 +62,9 @@ def cortext_summary(root):
     done = sum(1 for r in rows if r["done"])
     out = sum(r["out_tokens"] for r in rows)
     running = next((r["tag"] for r in sorted(rows, key=lambda x: x["tag"]) if not r["done"]), None)
-    tail = f" · {running} run" if running else " · ✓ all done"
-    return f"⛵ {done}/{total} · {human(out)} out{tail}"
+    frac = done / total if total else 0.0
+    tail = f" · {running} run" if running else " · ✓"
+    return f"⛵ {_mon.bar(frac)} {done}/{total} · {human(out)} out{tail}"
 
 
 def render(data):

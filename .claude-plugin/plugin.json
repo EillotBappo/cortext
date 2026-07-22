@@ -1,10 +1,20 @@
 {
   "name": "cortext",
   "description": "Opus thinks, Haiku grinds. Decompose a task, hand each subagent a minimal brief, run it on cheap Haiku in an isolated worktree, and watch tokens + progress live in a terminal dashboard.",
-  "version": "0.5.0",
-  "author": { "name": "EillotBappo" },
+  "version": "0.5.1",
+  "author": {
+    "name": "EillotBappo"
+  },
   "homepage": "https://github.com/EillotBappo/cortext",
   "repository": "https://github.com/EillotBappo/cortext",
   "license": "MIT",
-  "keywords": ["subagents", "orchestration", "haiku", "cost", "worktree", "monitor", "tui"]
+  "keywords": [
+    "subagents",
+    "orchestration",
+    "haiku",
+    "cost",
+    "worktree",
+    "monitor",
+    "tui"
+  ]
 }
