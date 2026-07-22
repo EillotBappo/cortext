@@ -20,11 +20,13 @@ Usage:
   cortext-monitor <dir>      # watch a specific subagents/ directory
   cortext-monitor --selftest # run parser self-checks
 
+Live keys: q quit · r rescan (re-pick the active session) · c clear+repaint.
+
 ponytail: progress % is a tool-call estimate (calls/budget), not ground truth —
 it pins at 100% while a subagent keeps going past its budget. Upgrade path: have
 subagents write a real step count to the manifest if a truthful bar is needed.
 """
-import json, os, re, sys, time, glob
+import json, os, re, sys, glob
 
 TAG_RE = re.compile(r"\[cortext:([\w.\-]+)\]")
 BARW = 10
@@ -253,23 +255,45 @@ def main(argv):
         print(render(subdir, load_manifest(), 0))
         return 0
 
+    import select, termios, tty  # unix TTY only; --once/pipes never reach here
+
     def draw(frame):
         # home, rewrite each line clearing to EOL, then clear everything below.
         body = "\n".join(l + "\x1b[K" for l in frame.split("\n"))
         sys.stdout.write("\x1b[H" + body + "\x1b[J")
         sys.stdout.flush()
 
+    keyhint = "  [q]uit   [r]escan session   [c]lear"
+    auto = not argv  # subdir was auto-resolved → 'r' can re-pick the live session
+    fd = sys.stdin.fileno()
+    old_attr = termios.tcgetattr(fd)
     tick = 0
-    sys.stdout.write("\x1b[?1049h\x1b[H\x1b[2J\x1b[?25l")  # alt screen, clear, hide cursor
+    full_clear = True
+    sys.stdout.write("\x1b[?1049h\x1b[?25l")  # alt screen, hide cursor
     sys.stdout.flush()
     try:
+        tty.setcbreak(fd)  # read keys unbuffered, no Enter needed
         while True:
-            draw(render(subdir, load_manifest(), tick))
+            if full_clear:
+                sys.stdout.write("\x1b[2J")
+                full_clear = False
+            draw(render(subdir, load_manifest(), tick) + "\n" + keyhint)
             tick += 1
-            time.sleep(1.0)
+            # poll a key for up to 1s instead of a blind sleep — this IS the refresh tick.
+            if select.select([sys.stdin], [], [], 1.0)[0]:
+                ch = sys.stdin.read(1)
+                if ch in ("q", "Q", "\x03"):  # q or Ctrl-C
+                    break
+                if ch in ("r", "R"):  # rescan: re-pick the live session + full repaint
+                    if auto:
+                        subdir = newest_subagents_dir() or subdir
+                    full_clear = True
+                elif ch in ("c", "C"):  # clear artifacts and repaint
+                    full_clear = True
     except KeyboardInterrupt:
         pass
     finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_attr)
         sys.stdout.write("\x1b[?25h\x1b[?1049l")  # show cursor, leave alt screen
         sys.stdout.flush()
     return 0

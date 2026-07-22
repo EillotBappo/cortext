@@ -121,6 +121,18 @@ cortext monitor  (a1b2c3.jsonl)   ^C to quit
 Then restart or `/reload-plugins`. The `cortext-monitor` command is added to your
 PATH while the plugin is enabled.
 
+**Running from a clone (no plugin install):** symlink the monitor onto your PATH
+once so `cortext-monitor` works from any directory:
+
+```
+ln -sf "$PWD/bin/cortext-monitor" ~/.local/bin/cortext-monitor
+```
+
+The Haiku worker agents live in `agents/`. A plugin install registers them
+automatically; from a clone, copy them to `.claude/agents/` in your project (or
+`~/.claude/agents/` for all projects) and **restart the session** — agents only
+load at startup, so a mid-session copy won't resolve until you reload.
+
 ### Try it without installing
 
 ```
@@ -149,6 +161,9 @@ cortext-monitor --once     # print one frame and exit (CI / non-TTY)
 cortext-monitor path.jsonl # watch a specific transcript
 cortext-monitor --selftest # run the parser self-checks
 ```
+
+Live keys inside the dashboard: **`q`** quit · **`r`** rescan (re-pick the active
+session) · **`c`** clear + repaint.
 
 ## What's in the box
 

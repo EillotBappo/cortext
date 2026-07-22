@@ -43,8 +43,16 @@ dependency yourself or sequence them — don't fake parallelism.
 
 4. **Dispatch.** Spawn one subagent per subtask with the **Agent tool**:
    - `subagent_type`: `ct-haiku-ship` (for `ship`) or `ct-haiku-scout` (for `scout`).
-     If those aren't resolvable in this harness, use the default agent but set
-     `model: "haiku"` explicitly.
+     These restrict the toolset to a handful of tools, which is **most of the
+     token win** — a subagent's context is dominated by its tool schemas, not
+     your brief. If the Agent tool reports the type isn't found, the agents
+     aren't registered yet (plugin not installed, or `.claude/agents/` added
+     mid-session — agents only load at session start). **Reload/restart the
+     session so they register, or install the plugin** — do NOT just fall back to
+     the full-access `general-purpose` agent: it loads *every* tool schema into
+     each subagent (tens of thousands of tokens) and defeats the point. If you
+     truly can't register them, the least-bad fallback is a read-only agent with
+     `model: "haiku"`, and say so — the token bar will run hot.
    - `isolation: "worktree"` for every `ship` subtask.
    - `run_in_background: true` so they run concurrently and you keep control.
    - **The prompt MUST start with `[cortext:<tag>]`** — this is how the dashboard
