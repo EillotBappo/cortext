@@ -103,9 +103,14 @@ def load_objs(path):
 def load_manifest():
     try:
         with open(os.path.join(os.getcwd(), ".cortext", "tasks.json")) as f:
-            return {t["tag"]: t for t in json.load(f) if "tag" in t}
-    except (OSError, ValueError, KeyError):
+            data = json.load(f)
+    except (OSError, ValueError):
         return {}
+    # LLM-authored: may not be a list, or may hold non-dict junk. `"tag" in t`
+    # on a non-dict (e.g. an int) raises TypeError and kills every render tick.
+    if not isinstance(data, list):
+        return {}
+    return {t["tag"]: t for t in data if isinstance(t, dict) and "tag" in t}
 
 
 def _short_action(block):
@@ -251,7 +256,10 @@ def main(argv):
         print("cortext-monitor: no Claude Code sessions found.")
         print("  looked under:", os.path.expanduser("~/.claude/projects"))
         return 1
-    if once or not sys.stdout.isatty():
+    # Live key handling needs a real TTY on BOTH ends: stdout to draw, stdin for
+    # termios/cbreak. stdin-not-a-tty (e.g. `cortext-monitor < /dev/null`) would
+    # crash tcgetattr, so fall back to a single frame like --once.
+    if once or not sys.stdout.isatty() or not sys.stdin.isatty():
         print(render(subdir, load_manifest(), 0))
         return 0
 
@@ -282,6 +290,8 @@ def main(argv):
             # poll a key for up to 1s instead of a blind sleep — this IS the refresh tick.
             if select.select([sys.stdin], [], [], 1.0)[0]:
                 ch = sys.stdin.read(1)
+                if ch == "":  # stdin EOF (Ctrl-D / closed) — quit, don't busy-spin
+                    break
                 if ch in ("q", "Q", "\x03"):  # q or Ctrl-C
                     break
                 if ch in ("r", "R"):  # rescan: re-pick the live session + full repaint
@@ -332,6 +342,20 @@ def selftest():
     assert human(8200) == "8.2k" and human(120) == "120"
     # LLM-authored manifests: string/garbage budgets must not crash render.
     assert _int("12", 15) == 12 and _int(None, 15) == 15 and _int("x", 15) == 15
+    # A malformed manifest must degrade to {}, never crash a render tick.
+    import tempfile as _tf
+    _d = _tf.mkdtemp(); _cwd = os.getcwd(); os.chdir(_d); os.makedirs(".cortext")
+    try:
+        for bad in ("[1, 2, \"x\"]", "{\"not\": \"a list\"}", "42", "garbage{"):
+            with open(os.path.join(".cortext", "tasks.json"), "w") as _f:
+                _f.write(bad)
+            assert load_manifest() == {}, bad
+        # a well-formed entry still loads, junk siblings dropped
+        with open(os.path.join(".cortext", "tasks.json"), "w") as _f:
+            _f.write('[{"tag": "t1", "label": "ok"}, 7]')
+        assert load_manifest() == {"t1": {"tag": "t1", "label": "ok"}}
+    finally:
+        os.chdir(_cwd)
     print("selftest ok")
     return 0
 

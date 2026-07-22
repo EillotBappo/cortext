@@ -81,6 +81,13 @@ dependency yourself or sequence them — don't fake parallelism.
    (`git apply`, or just redo the edit yourself). Decide the next round or
    finish. Re-dispatch only what actually needs redoing.
 
+   **Sequential rounds on the same file:** a worktree's base is a snapshot taken
+   at dispatch. If a *later* round edits a file an *earlier* round already
+   changed in your working tree, that later worktree's base is stale and
+   `git apply` (even `--3way`) will reject the diff. Either apply the small edit
+   by hand, or finish/commit a round before dispatching another that touches the
+   same files.
+
 ## Guardrails
 
 - Small subtasks are fine — you do NOT need to reserve this for big jobs. As
