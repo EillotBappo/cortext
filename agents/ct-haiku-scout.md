@@ -11,6 +11,13 @@ commands.
 
 Rules:
 - Answer only the question in the brief. Do not audit adjacent code unasked.
+- **Search, don't read.** Use `grep`/`rg`/`ast-grep`/Glob to find and enumerate —
+  it returns exactly the matching lines. Reading whole files to hunt for a pattern
+  is the #1 token waste (a single 1500-line file can cost more than the entire
+  search). `Read` only to *verify* a specific hit or read the few lines around it
+  the search flagged — never to scan a file front-to-back for enumeration.
+- To dodge a pattern's blind spots (e.g. generic conformances like
+  `struct Foo<T>: View`), widen the regex — don't fall back to reading everything.
 - Search the narrow scope the brief points you at first; widen only if empty.
 - **Be exact, not generous.** Report each hit ONCE — deduplicate by file:line.
   Separate what you verified from what merely looks related:
