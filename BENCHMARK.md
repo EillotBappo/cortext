@@ -65,3 +65,42 @@ value was reasoning depth and count accuracy, not finding more. Use deterministi
 search for counts, cheap parallel agents for breadth, and premium models only
 where reasoning depth actually changes the outcome. cortext is the middle column:
 breadth coverage at cheap-agent cost.
+
+---
+
+# Second run — native subagent vs cortext (and the search-first fix)
+
+A live head-to-head on a real repo. Task: audit `Wallet/Views/` for every SwiftUI
+`View` struct declaration, with a count. Generic-aware grep ground truth = **73**
+across 22 files. Native = one full-access `general-purpose` subagent on Opus.
+cortext = two scoped Haiku scouts, each grounded with its file slice.
+
+| Metric | naive grep | Native (1× Opus) | cortext v0.7 (scouts read files) | cortext v0.8 (search-first) |
+|---|---|---|---|---|
+| Coverage /73 | 71 ✗ | **73 ✓** | **73 ✓** | **73 ✓** |
+| Tokens | ~few k | 39,065 | 189,241 | **~47k**\* |
+| Tool uses | 1 | 4 | 23 | 4 |
+| Wall-clock | <2s | 86s | ~31s (parallel) | **~31s** |
+
+\* One scout group re-measured under the fix: **92,901 → 22,656 tokens (−75.6%)**,
+identical 37/37 coverage. The other is projected to a similar cut.
+
+**Findings:**
+
+- **Both agent runs beat naive grep.** They found two generic
+  `struct FilterSection<Content: View>: View` declarations a naive regex misses.
+  Agent judgment > naive pattern.
+- **Out of the box, cortext LOST on tokens** (189k vs 39k). Its scouts *read whole
+  files* to enumerate (23 tool calls); the single Opus agent *grepped* (4 calls).
+  Same coverage, ~5× the tokens — the scouts' **method** was the defect, not the
+  model.
+- **The fix (v0.8): scouts ground with search first** (grep/rg, or a semantic tool
+  like tokensave when the project has one), and Read only to verify a hit.
+  Re-running the worst scout dropped it 75.6% with identical coverage — which
+  flips the result: search-first cortext beats the native Opus subagent on money
+  (~4–12×, per the 5–15× per-token price ratio) and wall-clock, and ties coverage.
+
+**Lesson:** cortext's edge over a native subagent isn't the cheap model alone —
+it's the *discipline* (search-first grounding + the coverage gate). When scouts
+abandon it and read files, a premium single agent wins. v0.8 enforces search-first
+in the scout contract.

@@ -3,127 +3,62 @@
 **Opus thinks, Haiku grinds.**
 
 A Claude Code plugin that turns your expensive main agent into a *planner* and
-pushes the grunt work down to cheap Haiku subagents — each one handed the
-*minimum* context it needs, running in its own isolated git worktree, with a
-live terminal dashboard showing exactly where your tokens are going.
+pushes the grunt work down to cheap Haiku subagents — each handed the *minimum*
+context it needs, running in its own git worktree, with a live dashboard showing
+exactly where your tokens go.
 
-Most subagent tooling runs peer agents on your *own* model with *full* context
-and leaves the spend invisible. cortext is built around the opposite bet — that
-the cheap way is the right way when the work is grunt work:
+- **Cheap by default.** Every subagent runs on **Haiku**. The expensive model
+  only plans and integrates; it never grinds.
+- **Grounded, then scoped.** The orchestrator finds facts first with the
+  highest-signal tool the project has (a code-graph like **tokensave**, memory
+  like **claude-mem**, or `grep`), then hands each subagent a tiny scoped brief —
+  so agents *judge*, they don't *discover*.
+- **Provably complete.** Subtasks declare what they must cover; `cortext-verify`
+  fails the run on any gap. No silently-dropped items.
+- **The spend is visible.** A live TUI, inline agent-panel rows, and a status-line
+  summary show tokens and how much grunt-work context stayed off your main window.
+- **Isolated.** Every `ship` subtask edits in its own worktree — parallel edits
+  can't collide.
 
-- **Cheap by default.** Every subagent runs on **Haiku**, not your planner
-  model. The expensive model only plans and integrates; it never grinds.
-- **Minimal context, on purpose.** Each subagent gets a *scoped brief* — the
-  exact paths and one success criterion, nothing else — dispatched through a
-  4–6 tool agent type so its context isn't bloated by tool schemas it'll never
-  use. Small context is the whole point, not a side effect.
-- **The spend is the product.** A live token/progress TUI, inline agent-panel
-  rows, and a main-status-line summary all show where tokens go and how much
-  grunt-work context stayed off your main window. You never fly blind.
-- **Isolated, never colliding.** Every `ship` subtask edits in its own git
-  worktree, so parallel edits can't step on each other.
+In a [live head-to-head](BENCHMARK.md), cheap Haiku subagents matched a premium
+Opus run's coverage exactly, for **~4–12× less money** — once they ground with
+search instead of reading whole files (the discipline the plugin now enforces).
 
-In a [side-by-side audit benchmark](#benchmark-cheap-agents-vs-a-premium-model),
-cheap Haiku subagents found **the exact same 76 change-sites as a premium Opus
-run** — using **27% fewer tokens** and finishing in **a third of the wall-clock**.
-A bigger model paid ~7× more for zero extra coverage.
-
-> Inspired by [firstmate](https://github.com/kunchenguid/firstmate)'s crew
-> model — cortext takes the crew idea somewhere else: cheap over peer, scoped
-> over full, and spend you can see.
+> Inspired by [firstmate](https://github.com/kunchenguid/firstmate)'s crew model —
+> pointed at a different goal: cheap over peer, scoped over full, spend you can see.
 
 ## How it works
 
 ```
   You ──▶ Orchestrator (Opus/Sonnet)
-             │  decompose task, write a tiny brief per subtask
+             │  ground with grep/tokensave, write a tiny brief per subtask
              ▼
         ┌────────────┬────────────┐
         ▼            ▼            ▼
    ct-haiku      ct-haiku      ct-haiku      ← cheap, scoped, isolated worktrees
    (scout)        (ship)        (ship)
         └────────────┴────────────┘
-             │  terse structured results
+             │  terse structured results + coverage line
              ▼
-        Orchestrator integrates, decides next round
-
-   cortext-monitor  ◀── tails the session transcript + .cortext/tasks.json
-   (2nd terminal)       → live per-agent progress %, token bar, current action
+        Orchestrator integrates, verifies coverage, decides next round
 ```
 
-1. **You give the main agent a task.** The bundled `delegate` skill
-   auto-triggers when the task splits into 2+ independent subtasks.
-2. **The orchestrator decomposes** it and, for each subtask, writes a minimal
-   brief — the exact paths/symbols needed, one success criterion, nothing else.
-   It records the plan in `.cortext/tasks.json`.
-3. **Each subtask is dispatched** to a Haiku subagent (`ct-haiku-scout` for
-   read-only research, `ct-haiku-ship` for edits) in a background, worktree-
-   isolated run. Every subagent prompt is tagged `[cortext:<tag>]`.
-4. **The monitor** (a separate terminal) reads the transcript Claude Code already
-   writes and renders live bars. No instrumentation, no hooks — it just tails
-   the native output.
-5. **The orchestrator reads results back.** For a `ship` worktree it reviews the
-   subagent's **uncommitted** diff (`git -C <worktreePath> diff`) and applies it
-   to the working tree — it does *not* `git merge` the worktree branch, whose
-   base is a snapshot of your dirty tree. Then it decides what to do next.
+1. **Give the main agent a task with independent parts.** The bundled `delegate`
+   skill auto-triggers when it splits into 2+ subtasks.
+2. **Ground + decompose.** The orchestrator finds the facts (grep / tokensave /
+   claude-mem), then writes a minimal brief per subtask into `.cortext/tasks.json`
+   — exact paths, one success criterion, and optionally an `expects` coverage
+   contract.
+3. **Dispatch** each subtask to a Haiku subagent (`ct-haiku-scout` for research,
+   `ct-haiku-ship` for edits), backgrounded and worktree-isolated. Prompts are
+   tagged `[cortext:<tag>]`.
+4. **Integrate.** For a `ship` worktree, review its uncommitted diff
+   (`git -C <worktreePath> diff`) and apply it — do **not** `git merge` the
+   branch (its base is a snapshot of your dirty tree).
+5. **Verify.** Run `cortext-verify` — a run isn't done while any subtask is under
+   its coverage contract.
 
-> `.cortext/` is created in your repo to hold the run manifest. Add `.cortext/`
-> to your `.gitignore` so it never lands in a commit.
-
-### Where the numbers come from
-
-The dashboard joins two sources:
-
-- **`.cortext/tasks.json`** — written by the orchestrator each run. Supplies each
-  agent's label, mode, tool-call budget, and token ceiling.
-- **The per-subagent transcripts** that Claude Code writes to
-  `~/.claude/projects/<slug>/<session-id>/subagents/agent-*.jsonl` — one file per
-  subagent, the native log. For each, the monitor sums `usage.output_tokens` for
-  the **out bar**, counts `tool_use` blocks for the **progress bar**, reads the
-  last `tool_use` for the **current-action** line, and detects completion from
-  the final `end_turn`.
-
-Each agent shows **two** token numbers:
-
-- **`out`** — output tokens the subagent generated. cortext's real cost signal.
-- **`↓ctx`** — context pushed down on its heaviest turn (mostly cached tool
-  schemas + system prompt). Large even for a tiny brief, but billed at ~0.1×.
-
-<details><summary>Why <code>↓ctx</code> is big but not a big bill</summary>
-
-`↓ctx` is fixed per-subagent overhead — system prompt, every tool schema,
-injected `CLAUDE.md` — not your brief. Dispatching through the scoped
-`ct-haiku-*` agents (4–6 tools) instead of a full-access `general-purpose` agent
-(every tool schema) is the biggest lever you control. Most of `↓ctx` is
-`cache_read`, billed ~0.1×. Progress % is an estimate (`tool_calls / budget`) —
-a liveness signal that pins at 100% past budget rather than faking "done".
-</details>
-
-### The bottom line: tokens saved
-
-The dashboard closes with the number that proves the whole point — a **`Σ`
-footer** counting the grunt-work context that ran on Haiku and never touched
-your Opus window:
-
-```
-Σ 2 agents · 11.3k out · ~93k tokens ground on Haiku, off your main context
-```
-
-That same `off-ctx` figure also rides the main status line, so you see the save
-live without a second terminal.
-
-```
-cortext monitor  (a1b2c3.jsonl)   ^C to quit
-
-  t1     scout ▓▓▓▓▓▓▓░░░  72%  (13/18 calls)  ✓ done
-         out  ▓▓░░░░░░░░ 8.2k/40.0k  ↓39.3k ctx   audit auth callers
-         • Read auth.swift
-  t2     ship  ▓▓▓░░░░░░░  31%  (6/20 calls)   / run
-         out  ▓░░░░░░░░░ 3.1k/60.0k  ↓54.6k ctx   fix null deref in cart
-         • Edit cart.swift
-
-  Σ 2 agents · 11.3k out · ~93k tokens ground on Haiku, off your main context
-```
+> `.cortext/` holds the run manifest. Add it to `.gitignore`.
 
 ## Install
 
@@ -132,196 +67,139 @@ cortext monitor  (a1b2c3.jsonl)   ^C to quit
 /plugin install cortext@cortext
 ```
 
-Then restart or `/reload-plugins`. The `cortext-monitor` command is added to your
-PATH while the plugin is enabled.
+Restart or `/reload-plugins`. Agents register at session start.
 
-**Running from a clone (no plugin install):** symlink the monitor onto your PATH
-once so `cortext-monitor` works from any directory:
-
-```
-ln -sf "$PWD/bin/cortext-monitor" ~/.local/bin/cortext-monitor
-```
-
-The Haiku worker agents live in `agents/`. A plugin install registers them
-automatically; from a clone, copy them to `.claude/agents/` in your project (or
-`~/.claude/agents/` for all projects) and **restart the session** — agents only
-load at startup, so a mid-session copy won't resolve until you reload.
-
-### Try it without installing
+<details><summary>Running from a clone (no plugin install)</summary>
 
 ```
 git clone https://github.com/EillotBappo/cortext
 claude --plugin-dir ./cortext
 ```
 
+Or symlink the tools onto your PATH and copy the agents into your project:
+
+```
+ln -sf "$PWD/bin/cortext-monitor" ~/.local/bin/cortext-monitor
+cp agents/ct-haiku-*.md .claude/agents/   # then restart the session
+```
+</details>
+
 ## Use
 
-1. Give Claude a task with independent parts, e.g.
-   *"Add a `deprecated` flag to every exported function in `src/api/` and update
-   the docs for each."*
-2. When it engages cortext, open a second terminal in the same project and run:
-   ```
-   cortext-monitor
-   ```
-3. Watch the crew grind. The main agent integrates results as they land.
+Give Claude a task with independent parts, e.g. *"add a `deprecated` flag to every
+exported function in `src/api/` and update the docs."* It engages cortext; you can
+also nudge it: *"delegate this with cortext."* Watch live with `cortext-monitor` in
+a second terminal.
 
-You can also nudge it explicitly: *"delegate this with cortext"*.
+## Watching the spend
 
-### Monitor commands
+cortext shows the spend in three places — the first two need no second window:
 
+**Inline agent-panel rows** (`subagentStatusLine`) — model · progress bar · out:
 ```
-cortext-monitor            # live dashboard for the current project
-cortext-monitor --once     # print one frame and exit (CI / non-TTY)
-cortext-monitor path.jsonl # watch a specific transcript
-cortext-monitor --selftest # run the parser self-checks
+⛵ t1 · haiku · ▓▓▓▓░░░░ 50% (6/12) · 1.1k out · ●
+⛵ t2 · haiku · ▓▓▓▓▓▓▓▓ 100% (20/20) · 6.0k out · ✓
 ```
 
-Live keys inside the dashboard: **`q`** quit · **`r`** rescan (re-pick the active
-session) · **`c`** clear + repaint.
+**Main status line** (`cortext-status`) — your normal line plus a run summary,
+nothing when idle:
+```
+Opus 4.8  my-app  main   ⛵ 3/5 · 218k out · 1.2M off-ctx · t4 run
+```
+
+**Sidecar TUI** (`cortext-monitor`) — the full dashboard in a second terminal:
+```
+cortext monitor  (a1b2c3.jsonl)   ^C to quit
+
+  t1     scout ▓▓▓▓▓▓▓░░░  72%  (13/18 calls)  ✓ done
+         out  ▓▓░░░░░░░░ 8.2k/40.0k  ↓39.3k ctx   audit auth callers
+         • Read auth.swift
+
+  Σ 1 agents · 8.2k out · ~39k tokens ground on Haiku, off your main context
+```
+
+```
+cortext-monitor            # live dashboard          cortext-monitor --once  # one frame (CI)
+cortext-monitor --selftest # parser self-checks      keys: q quit · r rescan · c clear
+```
+
+<details><summary>What the numbers mean</summary>
+
+The monitor reads only what Claude Code already writes: the per-subagent
+transcripts (`~/.claude/projects/<slug>/<session>/subagents/agent-*.jsonl`) plus
+`.cortext/tasks.json` for labels and budgets. No hooks, no instrumentation.
+
+Two token figures per agent:
+- **`out`** — output tokens the subagent generated. cortext's real cost signal.
+- **`↓ctx`** — context pushed down on its heaviest turn (mostly cached tool
+  schemas + system prompt). Large even for a tiny brief, but billed ~0.1×.
+
+The **`Σ` footer** / `off-ctx` sums each agent's peak context — grunt-work that ran
+on Haiku and never entered your Opus window. Progress % is `tool_calls / budget` —
+a liveness estimate, not ground truth.
+</details>
 
 ## What's in the box
 
 ```
 cortext/
-├── .claude-plugin/
-│   ├── plugin.json         # plugin manifest
-│   └── marketplace.json    # so the repo installs as its own marketplace
 ├── skills/delegate/SKILL.md   # the orchestration discipline (auto-triggers)
 ├── agents/
-│   ├── ct-haiku-ship.md    # Haiku edit worker (worktree)
-│   └── ct-haiku-scout.md   # Haiku read-only researcher
-├── settings.json           # registers both status lines + the suggest hook
+│   ├── ct-haiku-scout.md      # Haiku read-only researcher (search-first)
+│   └── ct-haiku-ship.md       # Haiku edit worker (worktree)
+├── settings.json              # registers status lines + the suggest hook
 └── bin/
-    ├── cortext-monitor     # the sidecar TUI (pure-stdlib Python 3, no deps)
-    ├── cortext-statusline  # per-subagent rows (with progress bar) in the agent panel
-    ├── cortext-status      # main status-line: normal line + live run summary
-    ├── cortext-suggest     # UserPromptSubmit hook: nudges toward delegation
-    └── cortext-verify      # deterministic coverage gate: fails a run with gaps
+    ├── cortext-monitor        # sidecar TUI (pure-stdlib Python 3, no deps)
+    ├── cortext-statusline     # per-subagent rows in the agent panel
+    ├── cortext-status         # main status-line + live run summary
+    ├── cortext-suggest        # hook: nudges toward delegation on fan-out prompts
+    └── cortext-verify         # coverage gate: exits non-zero on any gap
 ```
 
-## Two views
+## Benchmark
 
-cortext gives you the spend in two places:
-
-**1. In Claude Code itself — no second window needed.** Two native surfaces:
-
-- **Per-subagent rows** (`subagentStatusLine`): each subagent gets a compact
-  cortext row in Claude's agent panel, now with a live **progress bar** — the
-  statusline joins each row to its own transcript by agent id and reads the
-  manifest budget, so you see calls-vs-budget inline:
-
-  ```
-  ⛵ t1 · haiku · ▓▓▓▓░░░░ 50% (6/12) · 1.1k out · ●
-  ⛵ t2 · haiku · ▓▓▓▓▓▓▓▓ 100% (20/20) · 6.0k out · ✓
-  ```
-
-- **Main status line** (`statusLine`, `cortext-status`): your normal line
-  (model · dir · branch) with a run summary appended while cortext is active,
-  and nothing extra when it's idle:
-
-  ```
-  Opus 4.8  my-app  main   ⛵ 3/5 · 218k out · 1.2M off-ctx · t4 run
-  ```
-
-Between the two, everyday runs never need the sidecar.
-
-**2. The sidecar TUI** (`cortext-monitor`) — optional second terminal with the
-full-screen dashboard: per-agent bars, the `↓ctx` context column, and the live
-current-action line. Reach for it when you want the rich continuous view; a full
-multi-line live dashboard can't render *inside* Claude's chat pane (the harness
-owns it), which is why this half stays a sidecar.
-
-### Organic activation
-
-A `UserPromptSubmit` hook (`cortext-suggest`) watches for fan-out-shaped prompts
-— "across all…", "for each…", several file paths — and drops a one-line nudge to
-consider the `delegate` skill. It's deliberately quiet: it stays silent on
-single-target tasks and when you've already said "cortext".
-
-## Benchmark: cheap agents vs. a premium model
-
-We ran the same **read-only code-audit** four ways — grep, a structured Workflow,
-and the Agent tool on both Haiku and Opus. Here's the cost of each, with the
-coverage it achieved (measured, not modelled — [full table + method](BENCHMARK.md)):
+We tested the same code-audit several ways. Cheap Haiku agents (what cortext runs)
+matched a premium Opus run's coverage — for a fraction of the cost:
 
 ```
-Tokens to complete the same code-audit  (lower is better)
+Tokens for the same audit  (lower is better)
 
-  cortext · 9× Haiku    █████████████████████████·········  636k   → 76 sites found
-  Workflow · 9× Haiku   ███████████████████████████·······  684k   → 53 sites found
-  Agent tool · 9× Opus  ██████████████████████████████████  871k   → 76 sites found
-
-  grep · no agents: ~few k tokens, exact — but only finds the 53 patterns you name
+  cortext · Haiku    █████████████████████████·········  636k   → 76 sites ✓
+  Agent tool · Opus  ██████████████████████████████████  871k   → 76 sites ✓
+  grep · no agents   ▏                                    ~few k → misses judgment sites
 ```
 
-**cortext (cheap Haiku agents) found the exact same 76 change-sites as the
-premium Opus run** — using 27% fewer tokens (636k vs 871k) and finishing in a
-third of the wall-clock (40s vs 121s). At Opus's ~5×/token price that's roughly
-**~7× less money for identical coverage.** Opus even silently dropped one item
-(54/55 scanned) where Haiku returned all 55.
-
-The honest part: Opus wasn't useless — it counted references more accurately and
-reasoned deeper (traced downstream consumers, flagged dead imports). Its value is
-**reasoning depth, not finding more.** So match the tool to the goal:
+Same coverage, **~7× less money** than Opus, faster. The catch: a premium model
+still has real value — it reasons deeper and counts more accurately. So match the
+tool to the goal:
 
 | Goal | Best tool |
 |---|---|
 | Exact count of known patterns | **grep** — cheapest, exact |
-| Find the real change-sites cheaply | **cortext (Haiku agents)** — Opus coverage, ~⅓ the money, fastest |
-| Plan the edit (downstream refs, dead code) | **Opus agent** — deeper reasoning, but pricier |
+| Find real change-sites cheaply | **cortext (Haiku)** — Opus coverage, ~⅓ the money |
+| Plan the edit (downstream refs, dead code) | **Opus agent** — deeper reasoning, pricier |
 | Determinism / structured replay | **Workflow** |
 
-cortext owns the middle: breadth coverage at cheap-agent cost. See
-[BENCHMARK.md](BENCHMARK.md) for the full numbers and caveats.
+**How cortext beats a raw agent** — the benchmark exposed three failure modes; the
+plugin's discipline fixes each without a bigger model:
 
-### Closing the two gaps the benchmark exposed
+- **Over-counting** (raw Haiku: 154 refs vs true 140) → **ground first** with
+  tokensave/grep, then agents only judge the known set.
+- **Dropped items** (Opus silently returned 54/55) → **the coverage gate**
+  (`expects` + `cortext-verify`) keeps the run red until every item is accounted.
+- **Reading whole files to hunt** (a scout burned 189k where Opus grepped for 39k)
+  → **search-first scouts**: 92,901 → 22,656 tokens on a re-run, same coverage.
 
-Plain Haiku agents matched Opus on coverage but had two weaknesses — and *so did
-Opus*. cortext's discipline is built to beat both on exactly these axes, without
-paying for a bigger model:
-
-- **Over-counting** (Haiku reported 154 refs vs a true 140) → **ground first.**
-  The orchestrator finds the facts with the highest-signal tool the project has —
-  a code-graph MCP (**tokensave**) or memory (**claude-mem**) for structural
-  questions, `rg`/`grep`/`ast-grep` for anything countable — *before* dispatching,
-  then hands each scout its slice to *judge*, not *discover*. Grounding supplies
-  the denominator; agents supply the judgment. The scouts follow the same ladder
-  (semantic/memory → search → read-to-verify), so they never burn tokens reading
-  whole files to hunt — the defect a live head-to-head caught (189k → ~47k tokens
-  once fixed).
-- **Silently dropping items** (Opus returned 54/55) → **a coverage gate.** Each
-  subtask can declare `expects` (a count or an id list) in the manifest; each
-  subagent ends with a `cortext-coverage:` line; **`cortext-verify` reconciles
-  the two and exits non-zero on any gap**, so a run can't be called done while an
-  item is unaccounted for:
-
-  ```
-  $ cortext-verify
-  cortext-verify: 1/2 subtasks fully covered  — re-dispatch the ✗ subtasks
-    ✓ t1: covered 140/140
-    ✗ t2: missing 1: checkout.swift
-  ```
-
-- **Noisy raw output** (Haiku's ~90 raw hits → 76 real) → the scout contract now
-  splits `confirmed:` from `candidate:` and forbids padding the confirmed set
-  with downstream references.
-
-Net: same cheap-Haiku cost as the raw Agent tool, but **grounded** (exact counts)
-and **provably complete** (the gate is red until every expected item is covered)
-— the two things a premium model charged ~7× more for and *still* got wrong.
+Full numbers, both runs, and caveats: **[BENCHMARK.md](BENCHMARK.md)**.
 
 ## Limitations
 
-- The monitor needs **Python 3** (standard library only — nothing to install).
-- Progress % is a tool-call estimate, not a true step count (see above).
-- The `Σ` off-context total sums each agent's peak context (not a per-turn sum),
-  so it's an honest floor for tokens kept off your main agent — not an upper bound.
-- Subagent model control depends on your harness honouring `model: haiku` in the
-  agent definition / Agent tool call.
-- `cortext-verify` gates on *reported* coverage — it catches a subagent that
-  under-reports or goes missing, but can't detect one that *claims* an id it
-  didn't truly cover. Grounding the `expects` list from step-0 grep (not from the
-  agent) is what keeps the contract honest.
+- Needs **Python 3** (standard library only).
+- Progress % is a tool-call estimate, not a true step count.
+- Subagent model control depends on your harness honouring `model: haiku`.
+- `cortext-verify` gates on *reported* coverage — it catches under-reporting or a
+  missing subagent, not one that falsely *claims* an id. Grounding `expects` from
+  grep (not the agent) keeps the contract honest.
 
 ## License
 
