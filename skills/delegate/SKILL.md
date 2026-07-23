@@ -18,16 +18,26 @@ dependency yourself or sequence them — don't fake parallelism.
 
 ## The loop
 
-0. **Ground first — deterministic tools before agents.** If any part of the task
-   is *countable or enumerable* (count references, list call sites, find files
-   matching a pattern), run `rg`/`grep`/`ast-grep` FIRST to get an exact
-   inventory. Then hand each subagent its slice of that inventory to *judge or
-   verify* — do not make agents *discover* the set. This is why cortext beats a
-   raw Haiku agent on the same task: in the benchmark, agents left to discover
-   over-counted (154 refs vs a true 140), while a grep gives the exact
-   denominator for free. Agents add judgment (which sites truly need changing);
-   deterministic tools supply the ground truth. Skip this only when the task has
-   no enumerable structure.
+0. **Ground first — highest-signal tool before agents.** Before dispatching, find
+   the facts yourself with the cheapest tool that answers:
+   - **Semantic / memory tools if this project has them.** A code-graph MCP like
+     **tokensave** (a `.tokensave/` dir → `tokensave_context` / `tokensave_search`)
+     answers "where/what/who-calls" precisely and cheaply; **claude-mem** may
+     already hold the answer from past work. Prefer these over grep for structural
+     questions.
+   - **Deterministic search** (`rg`/`grep`/`ast-grep`) for anything *countable or
+     enumerable* — it gives an exact inventory and denominator for free.
+
+   Then hand each subagent its slice of that inventory to *judge or verify* — do
+   not make agents *discover* the set. This is why cortext beats a raw Haiku agent
+   on the same task: agents left to discover over-counted (154 refs vs a true
+   140), while grounding gives the exact count. Agents add judgment (which sites
+   truly need changing); deterministic tools supply the ground truth.
+
+   **Name the tool in each brief.** Tell the scout which high-signal tool this
+   project has ("this repo has tokensave — use `tokensave_context` first, then
+   grep") so it doesn't fall back to reading whole files. Skip grounding only when
+   the task has no enumerable or locatable structure.
 
 1. **Decompose.** Break the task into independent subtasks. For each, decide a
    **mode**:

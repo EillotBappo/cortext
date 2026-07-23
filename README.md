@@ -281,9 +281,14 @@ Opus*. cortext's discipline is built to beat both on exactly these axes, without
 paying for a bigger model:
 
 - **Over-counting** (Haiku reported 154 refs vs a true 140) → **ground first.**
-  The orchestrator runs `rg`/`grep`/`ast-grep` for the exact inventory *before*
-  dispatching, then hands each scout its slice to *judge*, not *discover*. Grep
-  supplies the denominator; agents supply the judgment. No agent guesses a count.
+  The orchestrator finds the facts with the highest-signal tool the project has —
+  a code-graph MCP (**tokensave**) or memory (**claude-mem**) for structural
+  questions, `rg`/`grep`/`ast-grep` for anything countable — *before* dispatching,
+  then hands each scout its slice to *judge*, not *discover*. Grounding supplies
+  the denominator; agents supply the judgment. The scouts follow the same ladder
+  (semantic/memory → search → read-to-verify), so they never burn tokens reading
+  whole files to hunt — the defect a live head-to-head caught (189k → ~47k tokens
+  once fixed).
 - **Silently dropping items** (Opus returned 54/55) → **a coverage gate.** Each
   subtask can declare `expects` (a count or an id list) in the manifest; each
   subagent ends with a `cortext-coverage:` line; **`cortext-verify` reconciles
